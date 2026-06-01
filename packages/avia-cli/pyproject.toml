@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avia-cli"
+version = "0.1.0"
+description = "Command line client for Avia dataset upload and browser authentication"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Eurekai" },
+]
+keywords = ["avia", "cli", "dataset", "upload", "computer-vision"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "avia-sdk==0.1.0",
+  "keyring>=25.0",
+  "platformdirs>=4.0",
+]
+
+[project.urls]
+Homepage = "https://avia.eurekailab.com"
+Repository = "https://github.com/Shengguang-Zhou/AviaCLI"
+
+[project.scripts]
+avia = "avia_cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avia_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/README.md",
+  "/pyproject.toml",
+]

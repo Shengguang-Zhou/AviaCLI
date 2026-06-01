@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avia-sdk"
+version = "0.1.0"
+description = "Python SDK for Avia public APIs and dataset upload"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Eurekai" },
+]
+keywords = ["avia", "sdk", "dataset", "upload", "computer-vision"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "Pillow>=10.0",
+  "PyYAML>=6.0",
+  "requests>=2.31",
+]
+
+[project.urls]
+Homepage = "https://avia.eurekailab.com"
+Repository = "https://github.com/Shengguang-Zhou/AviaCLI"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avia_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/README.md",
+  "/pyproject.toml",
+]
