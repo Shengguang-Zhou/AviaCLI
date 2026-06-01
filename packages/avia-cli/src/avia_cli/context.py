@@ -5,7 +5,7 @@ import os
 from urllib import parse
 
 from avia_cli.stores.keyring import CliAuthProfile, load_cli_auth_profile
-from avia_sdk.auth.tokens import AuthTokenManager
+from avia_cli.core.auth.tokens import AuthTokenManager
 
 
 def _load_saved_auth_profile() -> CliAuthProfile | None:

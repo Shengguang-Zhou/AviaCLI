@@ -4,8 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from avia_sdk.uploads.manifest import scan_source_manifest
-from avia_sdk.uploads.urls import upload_request_from_api
+from avia_cli.core.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.urls import upload_request_from_api
 
 
 def test_module_entrypoint_prints_help() -> None:
@@ -15,12 +15,7 @@ def test_module_entrypoint_prints_help() -> None:
         text=True,
         capture_output=True,
         check=False,
-        env={
-            "PYTHONPATH": (
-                f"{root / 'packages' / 'avia-sdk' / 'src'}:"
-                f"{root / 'packages' / 'avia-cli' / 'src'}"
-            )
-        },
+        env={"PYTHONPATH": str(root / "packages" / "avia-cli" / "src")},
     )
 
     assert proc.returncode == 0

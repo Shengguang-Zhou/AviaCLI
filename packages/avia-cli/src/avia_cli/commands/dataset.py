@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 from avia_cli.context import api_from_args, token_from_args
-from avia_sdk.uploads.archive import dataset_upload_archive
-from avia_sdk.uploads.dataset import upload_dataset
-from avia_sdk.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.archive import dataset_upload_archive
+from avia_cli.core.uploads.dataset import upload_dataset
+from avia_cli.core.uploads.manifest import scan_source_manifest
 
 
 def handle_dataset_command(args) -> int:

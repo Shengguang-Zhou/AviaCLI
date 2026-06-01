@@ -6,7 +6,6 @@ requires-python = ">=3.10"
 members = [
     "avia-cli",
     "avia-python-client-workspace",
-    "avia-sdk",
 ]
 
 [[package]]
@@ -14,16 +13,20 @@ name = "avia-cli"
 version = "0.1.0"
 source = { editable = "packages/avia-cli" }
 dependencies = [
-    { name = "avia-sdk" },
     { name = "keyring" },
+    { name = "pillow" },
     { name = "platformdirs" },
+    { name = "pyyaml" },
+    { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "avia-sdk", editable = "packages/avia-sdk" },
     { name = "keyring", specifier = ">=25.0" },
+    { name = "pillow", specifier = ">=10.0" },
     { name = "platformdirs", specifier = ">=4.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.31" },
 ]
 
 [[package]]
@@ -45,23 +48,6 @@ dev = [
     { name = "build", specifier = ">=1.2" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.7" },
-]
-
-[[package]]
-name = "avia-sdk"
-version = "0.1.0"
-source = { editable = "packages/avia-sdk" }
-dependencies = [
-    { name = "pillow" },
-    { name = "pyyaml" },
-    { name = "requests" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pillow", specifier = ">=10.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests", specifier = ">=2.31" },
 ]
 
 [[package]]

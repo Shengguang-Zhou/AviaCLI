@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 
 from avia_cli.context import api_from_args, token_from_args
-from avia_sdk.uploads.dataset import create_source_import
-from avia_sdk.uploads.manifest import scan_source_manifest
-from avia_sdk.uploads.state import _source_import_payload
+from avia_cli.core.uploads.dataset import create_source_import
+from avia_cli.core.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.state import _source_import_payload
 
 
 def handle_import_command(args) -> int:

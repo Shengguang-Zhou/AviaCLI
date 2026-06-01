@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib import parse
 
-from avia_sdk.uploads.manifest import (
+from avia_cli.core.uploads.manifest import (
     _image_size_file,
     _is_image_path,
     _sha256_file,

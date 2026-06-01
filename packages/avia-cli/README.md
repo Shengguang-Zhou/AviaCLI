@@ -30,5 +30,6 @@ avia dataset upload \
   --format yolo
 ```
 
-The CLI depends on `avia-sdk` and owns only command parsing, terminal output,
-and local credential storage.
+The published distribution is intentionally a single package. Internal modules
+under `avia_cli.core` keep auth and upload code reusable without exposing a
+separate SDK package before that API is stable.

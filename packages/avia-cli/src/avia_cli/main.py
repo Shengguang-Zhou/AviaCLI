@@ -6,7 +6,7 @@ from avia_cli.commands.auth import handle_auth_command
 from avia_cli.commands.dataset import handle_dataset_command
 from avia_cli.commands.imports import handle_import_command
 from avia_cli.parser import _build_parser
-from avia_sdk import errors
+from avia_cli.core import errors
 
 
 def main() -> int:

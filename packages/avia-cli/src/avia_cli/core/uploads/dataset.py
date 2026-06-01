@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from avia_sdk import errors as _errors
-from avia_sdk.uploads.api import (
+from avia_cli.core import errors as _errors
+from avia_cli.core.uploads.api import (
     _batch_upload_urls,
     _complete_dataset_file_batch,
     _complete_import,
@@ -18,19 +18,19 @@ from avia_sdk.uploads.api import (
     _post_json,
     _put_file_with_retries,
 )
-from avia_sdk.uploads.manifest import (
+from avia_cli.core.uploads.manifest import (
     _guess_content_type,
     scan_source_manifest,
 )
-from avia_sdk.uploads.state import (
+from avia_cli.core.uploads.state import (
     _chunked,
     _load_resume_state,
     _save_state,
     _state_dir,
     _state_path,
 )
-from avia_sdk.uploads.timing import UploadTimingRecorder
-from avia_sdk.uploads.urls import (
+from avia_cli.core.uploads.timing import UploadTimingRecorder
+from avia_cli.core.uploads.urls import (
     upload_request_from_api as _upload_request_from_api,
 )
 

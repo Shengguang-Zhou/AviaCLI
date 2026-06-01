@@ -13,17 +13,14 @@ dev = [
 
 [tool.uv.workspace]
 members = [
-  "packages/avia-sdk",
   "packages/avia-cli",
 ]
 
 [tool.uv.sources]
-avia-sdk = { workspace = true }
 avia-cli = { workspace = true }
 
 [tool.pytest.ini_options]
 pythonpath = [
-  "packages/avia-sdk/src",
   "packages/avia-cli/src",
 ]
 testpaths = ["tests"]

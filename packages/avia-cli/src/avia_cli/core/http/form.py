@@ -4,8 +4,8 @@ import json
 from typing import Any
 from urllib import error as urlerror, parse, request
 
-from avia_sdk.auth.tokens import refresh_after_auth_error
-from avia_sdk.errors import _AviaHTTPError
+from avia_cli.core.auth.tokens import refresh_after_auth_error
+from avia_cli.core.errors import _AviaHTTPError
 
 
 def _request_form_json(

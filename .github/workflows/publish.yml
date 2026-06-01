@@ -35,9 +35,7 @@ jobs:
         run: uv run ruff check packages tests
 
       - name: Build distributions
-        run: |
-          uv build --package avia-sdk
-          uv build --package avia-cli
+        run: uv build --package avia-cli
 
       - uses: actions/upload-artifact@v4
         with:

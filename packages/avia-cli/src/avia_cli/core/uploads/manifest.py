@@ -5,7 +5,7 @@ import hashlib
 import mimetypes
 from pathlib import Path
 
-from avia_sdk.uploads.metadata import read_yolo_class_names
+from avia_cli.core.uploads.metadata import read_yolo_class_names
 
 
 def _guess_content_type(path: str) -> str:

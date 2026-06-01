@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Any
 from urllib import error as urlerror, parse, request
 
-from avia_sdk.errors import _AviaHTTPError, _UploadHTTPError
-from avia_sdk.auth.tokens import refresh_after_auth_error
-from avia_sdk.uploads.manifest import _image_size_file, _is_image_path, _sha256_file
-from avia_sdk.uploads.state import _ensure_sha256_batch as _support_ensure_sha256_batch
-from avia_sdk.uploads.state import _should_bypass_proxy_for_upload
-from avia_sdk.uploads.timing import put_file_with_retries as _retry_put_file
-from avia_sdk.uploads.transfer import put_file_curl as _transfer_put_file_curl
-from avia_sdk.uploads.transfer import put_file_requests as _transfer_put_file_requests
+from avia_cli.core.errors import _AviaHTTPError, _UploadHTTPError
+from avia_cli.core.auth.tokens import refresh_after_auth_error
+from avia_cli.core.uploads.manifest import _image_size_file, _is_image_path, _sha256_file
+from avia_cli.core.uploads.state import _ensure_sha256_batch as _support_ensure_sha256_batch
+from avia_cli.core.uploads.state import _should_bypass_proxy_for_upload
+from avia_cli.core.uploads.timing import put_file_with_retries as _retry_put_file
+from avia_cli.core.uploads.transfer import put_file_curl as _transfer_put_file_curl
+from avia_cli.core.uploads.transfer import put_file_requests as _transfer_put_file_requests
 
 _SUCCESS_STATUSES = {"succeeded", "success", "completed", "complete", "ready", "done"}
 _FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}

@@ -10,17 +10,17 @@ from pathlib import Path
 from typing import Any
 from urllib import parse
 
-from avia_sdk.http.form import _request_form_json
-from avia_sdk.uploads.api import (
+from avia_cli.core.http.form import _request_form_json
+from avia_cli.core.uploads.api import (
     _complete_import,
     _poll_import,
     _project_path,
     _request_json,
 )
-from avia_sdk.uploads.dataset import _FAILED_STATUSES
-from avia_sdk.uploads.parts import _put_file_part_with_retries
-from avia_sdk.uploads.state import _chunked
-from avia_sdk.uploads.urls import upload_url_from_api
+from avia_cli.core.uploads.dataset import _FAILED_STATUSES
+from avia_cli.core.uploads.parts import _put_file_part_with_retries
+from avia_cli.core.uploads.state import _chunked
+from avia_cli.core.uploads.urls import upload_url_from_api
 
 _AUTO_ARCHIVE_PART_SIZE_MB = 64
 _MAX_ARCHIVE_MULTIPART_PARTS = 9000

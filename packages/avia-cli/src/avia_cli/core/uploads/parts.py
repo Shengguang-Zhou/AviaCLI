@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from avia_sdk.uploads.transfer import (
+from avia_cli.core.uploads.transfer import (
     put_file_part as _transfer_put_file_part,
     put_file_part_with_retries as _retry_put_file_part,
 )
