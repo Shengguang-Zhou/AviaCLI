@@ -19,6 +19,7 @@ from avia_cli.core.uploads.api import (
 )
 from avia_cli.core.uploads.dataset import _FAILED_STATUSES
 from avia_cli.core.uploads.parts import _put_file_part_with_retries
+from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.state import _chunked
 from avia_cli.core.uploads.urls import upload_url_from_api
 
@@ -383,4 +384,4 @@ def dataset_upload_archive(args: argparse.Namespace, *, api: str, token: object)
         status = str(poll.get("status") or "").strip().lower()
         if status in _FAILED_STATUSES:
             raise SystemExit(json.dumps(result, ensure_ascii=False))
-    return result
+    return attach_upload_refs(result)

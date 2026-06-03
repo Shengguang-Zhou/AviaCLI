@@ -22,6 +22,7 @@ from avia_cli.core.uploads.manifest import (
     _guess_content_type,
     scan_source_manifest,
 )
+from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.state import (
     _chunked,
     _load_resume_state,
@@ -480,4 +481,4 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
         status = str(poll.get("status") or "").strip().lower()
         if status in _FAILED_STATUSES:
             raise SystemExit(json.dumps(result, ensure_ascii=False))
-    return result
+    return attach_upload_refs(result)

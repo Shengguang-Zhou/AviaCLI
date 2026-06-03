@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.manifest import scan_source_manifest
 from avia_cli.core.uploads.urls import upload_request_from_api
 
@@ -53,3 +54,46 @@ def test_upload_request_from_api_rewrites_public_upload_url() -> None:
         "http://127.0.0.1:9000/avia-runtime/project_assets/a.jpg?X-Amz-Signature=1"
     )
     assert headers == {"Host": "avia.eurekailab.com"}
+
+
+def test_attach_upload_refs_promotes_dataset_manifest_ref() -> None:
+    result = {
+        "complete": {
+            "dataset_manifest_ref": {
+                "id": "dm_import",
+                "storage": {"kind": "minio", "manifest_path": "manifest.json"},
+            },
+            "read_lease": {
+                "id": "lease_import",
+                "dataset_manifest_ref_id": "dm_import",
+            },
+        }
+    }
+
+    attached = attach_upload_refs(result)
+
+    assert attached["dataset_manifest_ref"]["id"] == "dm_import"
+    assert attached["read_lease"]["id"] == "lease_import"
+
+
+def test_attach_upload_refs_promotes_archive_artifact_ref() -> None:
+    result = {
+        "multipart": {
+            "complete": {
+                "artifact_ref": {
+                    "id": "ar_import",
+                    "storage": {"kind": "minio", "object_key": "raw.zip"},
+                },
+                "read_lease": {
+                    "id": "lease_archive",
+                    "artifact_ref_id": "ar_import",
+                },
+            }
+        },
+        "complete": {},
+    }
+
+    attached = attach_upload_refs(result)
+
+    assert attached["artifact_ref"]["id"] == "ar_import"
+    assert attached["read_lease"]["artifact_ref_id"] == "ar_import"
