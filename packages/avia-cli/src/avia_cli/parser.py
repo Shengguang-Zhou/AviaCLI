@@ -42,14 +42,10 @@ def _build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--token", default=None)
     create_parser.add_argument("--project", required=True)
     create_parser.add_argument("--source", required=True)
-    create_parser.add_argument(
-        "--source-kind", default="object_prefix", choices=["object_prefix"]
-    )
+    create_parser.add_argument("--source-kind", default="object_prefix", choices=["object_prefix"])
     create_parser.add_argument("--format", default="yolo", choices=_SUPPORTED_FORMATS)
     create_parser.add_argument("--task-key", default="detect")
-    create_parser.add_argument(
-        "--class", dest="class_name", action="append", default=[]
-    )
+    create_parser.add_argument("--class", dest="class_name", action="append", default=[])
     create_parser.add_argument(
         "--no-auto-post-processing",
         dest="auto_post_processing",
@@ -63,6 +59,39 @@ def _build_parser() -> argparse.ArgumentParser:
     dataset_scan_parser = dataset_sub.add_parser("scan")
     dataset_scan_parser.add_argument("--source", required=True)
 
+    inspect_parser = dataset_sub.add_parser("inspect")
+    inspect_parser.add_argument("--source", required=True)
+    inspect_parser.add_argument("--format", default="yolo", choices=_SUPPORTED_FORMATS)
+    inspect_parser.add_argument(
+        "--hash-workers",
+        type=int,
+        default=max(1, min(8, os.cpu_count() or 1)),
+    )
+    inspect_parser.add_argument("--max-files", type=int, default=None)
+    inspect_parser.add_argument("--max-samples", type=int, default=None)
+    inspect_parser.add_argument("--json", action="store_true")
+
+    verify_parser = dataset_sub.add_parser("verify")
+    verify_parser.add_argument("--source", required=True)
+    verify_parser.add_argument("--format", default="yolo", choices=_SUPPORTED_FORMATS)
+    verify_parser.add_argument(
+        "--hash-workers",
+        type=int,
+        default=max(1, min(8, os.cpu_count() or 1)),
+    )
+    verify_parser.add_argument("--max-files", type=int, default=None)
+    verify_parser.add_argument("--max-samples", type=int, default=None)
+    verify_parser.add_argument("--json", action="store_true")
+
+    cleanup_parser = dataset_sub.add_parser("cleanup-plan")
+    cleanup_parser.add_argument("--api", default=None)
+    cleanup_parser.add_argument("--token", default=None)
+    cleanup_parser.add_argument("--project", required=True)
+    cleanup_parser.add_argument("--source", default=None)
+    cleanup_parser.add_argument("--state-dir", default=None)
+    cleanup_parser.add_argument("--limit", type=int, default=50)
+    cleanup_parser.add_argument("--json", action="store_true")
+
     upload_parser = dataset_sub.add_parser("upload")
     upload_parser.add_argument("--api", default=None)
     upload_parser.add_argument("--token", default=None)
@@ -70,9 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument("--source", required=True)
     upload_parser.add_argument("--format", default="yolo", choices=_SUPPORTED_FORMATS)
     upload_parser.add_argument("--task-key", default="detect")
-    upload_parser.add_argument(
-        "--class", dest="class_name", action="append", default=[]
-    )
+    upload_parser.add_argument("--class", dest="class_name", action="append", default=[])
     upload_parser.add_argument("--concurrency", type=int, default=32)
     upload_parser.add_argument("--batch-size", type=int, default=1000)
     upload_parser.add_argument("--max-files", type=int, default=None)
