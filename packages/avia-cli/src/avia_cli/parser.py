@@ -100,8 +100,18 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument("--format", default="yolo", choices=_SUPPORTED_FORMATS)
     upload_parser.add_argument("--task-key", default="detect")
     upload_parser.add_argument("--class", dest="class_name", action="append", default=[])
-    upload_parser.add_argument("--concurrency", type=int, default=32)
-    upload_parser.add_argument("--batch-size", type=int, default=1000)
+    upload_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="PUT upload concurrency (default: auto by hardware/network).",
+    )
+    upload_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Files per upload batch (default: auto by hardware/network).",
+    )
     upload_parser.add_argument("--max-files", type=int, default=None)
     upload_parser.add_argument("--max-samples", type=int, default=None)
     upload_parser.add_argument("--batch-upload-url-timeout", type=float, default=60.0)
@@ -112,8 +122,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STREAMING_BATCH_HTTP_TIMEOUT_SECONDS,
     )
     upload_parser.add_argument("--batch-complete-retries", type=int, default=4)
-    upload_parser.add_argument("--batch-complete-concurrency", type=int, default=1)
-    upload_parser.add_argument("--stream-flush-size", type=int, default=512)
+    upload_parser.add_argument(
+        "--batch-complete-concurrency",
+        type=int,
+        default=None,
+        help="Batch-complete concurrency (default: auto by hardware/network).",
+    )
+    upload_parser.add_argument(
+        "--stream-flush-size",
+        type=int,
+        default=None,
+        help="Files buffered before a stream-complete batch (default: auto by hardware/network).",
+    )
     upload_parser.add_argument(
         "--auto-crop-embedding",
         dest="auto_crop_embedding",
@@ -123,7 +143,8 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument(
         "--hash-workers",
         type=int,
-        default=max(1, min(8, os.cpu_count() or 1)),
+        default=None,
+        help="SHA-256 hashing workers (default: auto by hardware/network).",
     )
     upload_parser.add_argument("--state-flush-every", type=int, default=200)
     upload_parser.add_argument("--state-flush-interval", type=float, default=2.0)

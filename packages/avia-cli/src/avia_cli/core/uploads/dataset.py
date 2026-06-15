@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from avia_cli.core import errors as _errors
+from avia_cli.core.uploads.autotune import (
+    compute_upload_params,
+    detect_storage_kind,
+    probe_rtt_seconds,
+)
 from avia_cli.core.uploads.api import (
     _batch_upload_urls,
     _complete_dataset_file_batch,
@@ -55,7 +62,6 @@ __all__ = (
 )
 
 
-
 def create_source_import(
     *, api: str, token: object, project_id: str, payload: dict[str, object]
 ) -> dict[str, Any]:
@@ -67,7 +73,57 @@ def create_source_import(
     )
 
 
+_AUTO_UPLOAD_PARAM_NAMES = (
+    "concurrency",
+    "batch_size",
+    "hash_workers",
+    "batch_complete_concurrency",
+    "stream_flush_size",
+)
+
+
+def _resolve_auto_upload_params(args: object, *, api: str) -> None:
+    """Fill any unset (None) folder-upload concurrency params from hardware/RTT.
+
+    Mirrors GPU batch autotuning: classify the upload host (local/LAN/WAN),
+    probe RTT, then size concurrency/batch params. Values explicitly passed on
+    the CLI (non-None) are preserved as-is.
+    """
+    cores = os.cpu_count() or 4
+    origin = str(getattr(args, "upload_url_origin_override", "") or "").strip()
+    target = origin or api
+    split = urlsplit(target if "//" in target else f"//{target}")
+    host = split.hostname or "127.0.0.1"
+    port = split.port or (443 if split.scheme == "https" else 80)
+
+    storage_kind = detect_storage_kind(host)
+    probe_rtt = probe_rtt_seconds(host, int(port), storage_kind)
+    params = compute_upload_params(cores=cores, storage_kind=storage_kind, probe_rtt_s=probe_rtt)
+
+    filled_any = False
+    for name in _AUTO_UPLOAD_PARAM_NAMES:
+        if getattr(args, name, None) is None:
+            setattr(args, name, params[name])
+            filled_any = True
+
+    if filled_any:
+        print(
+            (
+                "auto upload params: "
+                f"storage={storage_kind} rtt={probe_rtt * 1000:.1f}ms cores={cores} "
+                f"-> concurrency={params['concurrency']} "
+                f"batch_complete={params['batch_complete_concurrency']} "
+                f"hash_workers={params['hash_workers']} "
+                f"batch_size={params['batch_size']} "
+                f"stream_flush={params['stream_flush_size']}"
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
+    _resolve_auto_upload_params(args, api=api)
     upload_started = time.monotonic()
     upload_timing = UploadTimingRecorder(first_file_target=512)
     project_id = str(args.project)
@@ -138,9 +194,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
     completion_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=max(1, int(args.batch_complete_concurrency))
     )
-    completion_futures: list[
-        tuple[concurrent.futures.Future[dict[str, Any]], list[str]]
-    ] = []
+    completion_futures: list[tuple[concurrent.futures.Future[dict[str, Any]], list[str]]] = []
 
     def stream_files_for(relative_paths: list[str]) -> list[dict[str, object]]:
         stream_files: list[dict[str, object]] = []
@@ -244,17 +298,13 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
             pending_upload = [
                 item
                 for item in batch
-                if not bool(
-                    state_files.get(str(item["relative_path"]), {}).get("uploaded")
-                )
+                if not bool(state_files.get(str(item["relative_path"]), {}).get("uploaded"))
             ]
             pending_streamed_paths = [
                 str(item["relative_path"])
                 for item in batch
                 if bool(state_files.get(str(item["relative_path"]), {}).get("uploaded"))
-                and not bool(
-                    state_files.get(str(item["relative_path"]), {}).get("streamed")
-                )
+                and not bool(state_files.get(str(item["relative_path"]), {}).get("streamed"))
             ]
             upload_items: dict[str, dict[str, Any]] = {}
             pending: list[dict[str, Any]] = []
@@ -270,9 +320,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
                     "batch_upload_urls",
                     _batch_upload_urls,
                     file_count=len(pending),
-                    byte_count=sum(
-                        int(item.get("size_bytes") or 0) for item in pending
-                    ),
+                    byte_count=sum(int(item.get("size_bytes") or 0) for item in pending),
                     api=api,
                     token=token,
                     project_id=project_id,
@@ -292,9 +340,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
                 submit_stream_batch(pending_streamed_paths)
             progress = {
                 "started_at": time.monotonic(),
-                "total_bytes": sum(
-                    int(item.get("size_bytes") or 0) for item in pending
-                ),
+                "total_bytes": sum(int(item.get("size_bytes") or 0) for item in pending),
                 "done_bytes": 0,
                 "done_files": 0,
                 "total_files": len(pending),
@@ -306,9 +352,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
             ) -> None:
                 interval = max(0.0, float(args.progress_interval or 0.0))
                 now = time.monotonic()
-                if not force and (
-                    interval <= 0 or now - float(ctx["last_at"]) < interval
-                ):
+                if not force and (interval <= 0 or now - float(ctx["last_at"]) < interval):
                     return
                 ctx["last_at"] = now
                 elapsed = max(0.001, now - float(ctx["started_at"]))
@@ -332,9 +376,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
                 signed_items: dict[str, dict[str, Any]] = upload_items,
             ) -> tuple[str, dict[str, Any]]:
                 signed = signed_items[relative_path]
-                upload_url = str(
-                    signed.get("upload_url") or signed.get("url") or ""
-                ).strip()
+                upload_url = str(signed.get("upload_url") or signed.get("url") or "").strip()
                 upload_url, upload_headers = _upload_request_from_api(
                     api,
                     upload_url,
@@ -391,9 +433,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
                             "uploaded": True,
                             "object_key": signed.get("object_key"),
                             "sha256": file_by_relative[relative_path].get("sha256"),
-                            "size_bytes": file_by_relative[relative_path].get(
-                                "size_bytes"
-                            ),
+                            "size_bytes": file_by_relative[relative_path].get("size_bytes"),
                             "width": file_by_relative[relative_path].get("width"),
                             "height": file_by_relative[relative_path].get("height"),
                         }
@@ -434,9 +474,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
                 missing = [
                     str(item["relative_path"])
                     for item in pending
-                    if not bool(
-                        state_files.get(str(item["relative_path"]), {}).get("uploaded")
-                    )
+                    if not bool(state_files.get(str(item["relative_path"]), {}).get("uploaded"))
                 ]
                 if missing:
                     raise SystemExit(
