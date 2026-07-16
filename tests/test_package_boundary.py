@@ -79,7 +79,7 @@ def test_internal_pr_ci_uses_native_clone_shared_cache_and_runs_full_release_gat
 
     assert "event: [pull_request, manual]" in workflow
     assert "backend: local" in workflow
-    assert "image: woodpeckerci/plugin-git:2.8.0" in workflow
+    assert "image: woodpeckerci/plugin-git:2.9.2" in workflow
     assert "http_proxy: http://127.0.0.1:7897" in workflow
     assert "https_proxy: http://127.0.0.1:7897" in workflow
     assert "no_proxy: 127.0.0.1,localhost,192.168.1.9" in workflow
@@ -164,7 +164,7 @@ def test_agents_document_is_living_source_of_truth_for_upload_invariants() -> No
     assert "symbolic links" in agents
     assert "Never truncate" in agents
     assert ".woodpecker/ci.yml" in agents
-    assert "woodpeckerci/plugin-git:2.8.0" in agents
+    assert "woodpeckerci/plugin-git:2.9.2" in agents
     assert "UV_LINK_MODE=hardlink" in agents
     assert "thin-bridge" in agents
 

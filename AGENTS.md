@@ -77,7 +77,8 @@ uv build --package avia-cli
 ```
 
 The internal Woodpecker PR/manual workflow is the quality-gate source of truth. It uses the native
-authenticated clone contract with `woodpeckerci/plugin-git:2.8.0` and `lfs: false`; clone traffic
+authenticated clone contract with Woodpecker 3.14's default trusted `woodpeckerci/plugin-git:2.9.2`
+and `lfs: false`; clone traffic
 uses the target host's loopback-only GitHub egress proxy at `127.0.0.1:7897`. Never restore
 `skip_clone` or a custom checkout script. Tracked sources must not be Git LFS pointer files. All
 repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this same-device workspace must use
