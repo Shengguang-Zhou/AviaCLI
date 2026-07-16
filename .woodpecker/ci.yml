@@ -24,6 +24,7 @@ steps:
       PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       UV_CACHE_DIR: /mnt/data/avia/cache/uv
       UV_LINK_MODE: hardlink
+      UV_PYTHON_DOWNLOADS: never
     commands:
       - uv sync --python ${PYTHON_VERSION} --frozen --all-packages --group dev
       - uv run --python ${PYTHON_VERSION} ruff check packages tests
@@ -36,6 +37,7 @@ steps:
       PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       UV_CACHE_DIR: /mnt/data/avia/cache/uv
       UV_LINK_MODE: hardlink
+      UV_PYTHON_DOWNLOADS: never
     when:
       - matrix:
           PYTHON_VERSION: "3.12"

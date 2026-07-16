@@ -23,6 +23,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   range. Quality runs on all three interpreters; release artifacts are built and published once.
 - uv 0.8.3 is the sole dependency resolver/cache ABI for local, Woodpecker, and release runs.
   Pin it in root `pyproject.toml`; do not add `uv.toml` or allow CI toolchain drift.
+- The local Woodpecker runner must provision Python 3.10, 3.11, and 3.12 before accepting work.
+  CI sets `UV_PYTHON_DOWNLOADS=never`, so a missing interpreter fails at the runner boundary
+  instead of downloading an unpinned runtime during a quality gate.
 - YOLO multilabel classification requires one label file per image. An existing empty label file
   is an explicit negative sample; a missing label file is a dataset error.
 - YOLO segment validity follows the AviaTraining/Ultralytics consumer contract. Official
@@ -82,6 +85,8 @@ and `lfs: false`; clone traffic
 uses the target host's loopback-only GitHub egress proxy at `127.0.0.1:7897`. Never restore
 `skip_clone` or a custom checkout script. Tracked sources must not be Git LFS pointer files. All
 repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this same-device workspace must use
-`UV_LINK_MODE=hardlink`, never copy mode. GitHub Actions is release-only for tags/manual trusted
+`UV_LINK_MODE=hardlink`, never copy mode. The runner pre-provisions all supported interpreters and
+the workflow sets `UV_PYTHON_DOWNLOADS=never`; CI must never fetch a Python runtime implicitly.
+GitHub Actions is release-only for tags/manual trusted
 publishing and runs the same frozen gates. Do not add hosted PR/main CI, server/GPU dependencies,
 or deployment behavior to this public client repository.

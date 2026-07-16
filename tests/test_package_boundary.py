@@ -88,6 +88,7 @@ def test_internal_pr_ci_uses_native_clone_shared_cache_and_runs_full_release_gat
     assert "checkout_cached_source.sh" not in workflow
     assert "UV_CACHE_DIR: /mnt/data/avia/cache/uv" in workflow
     assert "UV_LINK_MODE: hardlink" in workflow
+    assert workflow.count("UV_PYTHON_DOWNLOADS: never") == 2
     assert "UV_LINK_MODE: copy" not in workflow
     assert "/mnt/data/avia/cache/uv-avia-cli" not in workflow
     assert "uv sync --python ${PYTHON_VERSION} --frozen --all-packages --group dev" in workflow

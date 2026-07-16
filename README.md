@@ -41,6 +41,8 @@ uv build --package avia-cli
 ```
 
 Development and CI use the root-enforced uv 0.8.3 toolchain on Python 3.10, 3.11, and 3.12.
+The internal runner pre-provisions those interpreters and runs with `UV_PYTHON_DOWNLOADS=never`,
+so a missing runtime is an observable runner error rather than an implicit network download.
 
 Pull requests and manual internal runs use `.woodpecker/ci.yml` on the local backend with the
 native authenticated clone. The workflow uses uv 0.8.3 to run frozen dependency sync, the complete
@@ -75,9 +77,10 @@ YOLO segment input follows AviaTraining/Ultralytics runtime semantics: official 
 multi-segment walks are valid, while rasterizable crossing topology is surfaced as a structured
 warning rather than misclassified as an upload-blocking error.
 
-Woodpecker uses the pinned native authenticated `woodpeckerci/plugin-git:2.8.0` clone with
-`lfs: false`, the shared `/mnt/data/avia/cache/uv`, and `UV_LINK_MODE=hardlink`. The workflow has
-no custom checkout path and the source-boundary gate rejects tracked Git LFS pointer files.
+Woodpecker uses the pinned native authenticated `woodpeckerci/plugin-git:2.9.2` clone with
+`lfs: false`, the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
+`UV_PYTHON_DOWNLOADS=never`. The workflow has no custom checkout path and the source-boundary gate
+rejects tracked Git LFS pointer files.
 
 ## Release
 
