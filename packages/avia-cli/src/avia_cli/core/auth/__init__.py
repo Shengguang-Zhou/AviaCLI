@@ -1,1 +1,1 @@
-"""Authentication helpers for Avia SDK."""
+"""Authentication helpers for AviaCLI."""

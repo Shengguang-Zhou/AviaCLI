@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,9 +38,7 @@ BANNED_METADATA_TERMS = (
 def test_repository_builds_one_distribution_with_avia_console_script() -> None:
     root_project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     cli_project = (CLI_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
 
     assert '"packages/avia-cli"' in root_project
     assert "packages/avia-sdk" not in root_project
@@ -72,3 +71,84 @@ def test_package_does_not_import_server_algorithm_or_sdk_distribution_modules() 
     assert imported
     for name in imported:
         assert not name.startswith(BANNED_IMPORT_PREFIXES), name
+
+
+def test_internal_pr_ci_uses_native_clone_shared_cache_and_runs_full_release_gates() -> None:
+    workflow = (ROOT / ".woodpecker" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "event: [pull_request, manual]" in workflow
+    assert "backend: local" in workflow
+    assert "image: woodpeckerci/plugin-git:2.8.0" in workflow
+    assert "lfs: false" in workflow
+    assert "skip_clone" not in workflow
+    assert "checkout_cached_source.sh" not in workflow
+    assert "UV_CACHE_DIR: /mnt/data/avia/cache/uv" in workflow
+    assert "UV_LINK_MODE: hardlink" in workflow
+    assert "UV_LINK_MODE: copy" not in workflow
+    assert "/mnt/data/avia/cache/uv-avia-cli" not in workflow
+    assert "uv sync --frozen --all-packages --group dev" in workflow
+    assert "uv run pytest -W error" in workflow
+    assert "uv run ruff check packages tests" in workflow
+    assert "uv run ruff format --check packages tests" in workflow
+    assert "uv build --package avia-cli" in workflow
+
+
+def test_tracked_sources_are_not_git_lfs_pointer_files() -> None:
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout.split(b"\0")
+    pointer_header = b"version " + b"https://git-lfs.github.com/spec/v1"
+    pointers: list[str] = []
+    for raw in tracked:
+        if not raw:
+            continue
+        relative = raw.decode("utf-8")
+        path = ROOT / relative
+        if path.is_file():
+            with path.open("rb") as handle:
+                if handle.read(len(pointer_header)) == pointer_header:
+                    pointers.append(relative)
+    assert pointers == []
+
+
+def test_agents_document_is_living_source_of_truth_for_upload_invariants() -> None:
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert "idempotency_key" in agents
+    assert "pending-session" in agents
+    assert "symbolic links" in agents
+    assert "Never truncate" in agents
+    assert ".woodpecker/ci.yml" in agents
+    assert "woodpeckerci/plugin-git:2.8.0" in agents
+    assert "UV_LINK_MODE=hardlink" in agents
+    assert "thin-bridge" in agents
+
+
+def test_production_package_uses_only_aviacli_identity() -> None:
+    source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(CLI_SRC.rglob("*.py")))
+
+    assert "Avia SDK" not in source
+
+
+def test_upload_code_has_no_origin_or_host_rewrite_bypass() -> None:
+    source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(CLI_SRC.rglob("*.py")))
+    dataset_source = (CLI_SRC / "core" / "uploads" / "dataset.py").read_text(encoding="utf-8")
+    api_source = (CLI_SRC / "core" / "uploads" / "api.py").read_text(encoding="utf-8")
+
+    assert "upload_url_origin_override" not in source
+    assert "upload-url-origin-override" not in source
+    assert "upload_request_from_api" not in source
+    assert "_should_bypass_proxy_for_upload" not in source
+    assert "AVIA_UPLOAD_NO_PROXY_HOSTS" not in source
+    assert 'putheader("Host"' not in source
+    assert "_AviaHTTPError =" not in dataset_source
+    assert "_UploadHTTPError =" not in dataset_source
+    assert "__all__" not in dataset_source
+    assert "_UPLOAD_CHUNK_SIZE" not in dataset_source
+    assert "_DEFAULT_UPLOAD_READ_TIMEOUT" not in dataset_source
+    assert "_DEFAULT_UPLOAD_RETRY_BASE_DELAY" not in dataset_source
+    assert "_IMPORT_POLL_FAST_DELAYS_SEC" not in dataset_source
+    assert "_UPLOAD_CHUNK_SIZE" not in api_source

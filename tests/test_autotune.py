@@ -9,7 +9,10 @@ from avia_cli.core.uploads.autotune import (
     detect_storage_kind,
     probe_rtt_seconds,
 )
-from avia_cli.core.uploads.dataset import _resolve_auto_upload_params
+from avia_cli.core.uploads.dataset import (
+    _resolve_local_upload_params,
+    _resolve_transport_concurrency,
+)
 
 _AUTO_PARAM_NAMES = (
     "concurrency",
@@ -64,13 +67,12 @@ def test_compute_upload_params_upper_bound_scales_with_cores() -> None:
     assert params["concurrency"] == 16 * 2  # capped at 32
 
 
-def test_compute_upload_params_unknown_kind_falls_back_to_lan() -> None:
-    lan = compute_upload_params(cores=8, storage_kind="lan", probe_rtt_s=0.002)
-    unknown = compute_upload_params(cores=8, storage_kind="something-else", probe_rtt_s=0.002)
-    assert unknown == lan
+def test_compute_upload_params_rejects_unknown_storage_kind() -> None:
+    with pytest.raises(ValueError, match="unsupported storage kind"):
+        compute_upload_params(cores=8, storage_kind="something-else", probe_rtt_s=0.002)
 
 
-def test_probe_rtt_seconds_falls_back_when_connect_fails(
+def test_probe_rtt_seconds_exposes_target_when_connect_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def boom(*_args: object, **_kwargs: object) -> object:
@@ -78,11 +80,8 @@ def test_probe_rtt_seconds_falls_back_when_connect_fails(
 
     monkeypatch.setattr("avia_cli.core.uploads.autotune.socket.create_connection", boom)
 
-    assert probe_rtt_seconds("192.0.2.1", 9, "wan") == pytest.approx(0.03)
-    assert probe_rtt_seconds("192.0.2.1", 9, "local") == pytest.approx(0.0005)
-    assert probe_rtt_seconds("192.0.2.1", 9, "lan") == pytest.approx(0.002)
-    # unknown kind also falls back (to the wan default)
-    assert probe_rtt_seconds("192.0.2.1", 9, "mystery") == pytest.approx(0.03)
+    with pytest.raises(RuntimeError, match=r"192\.0\.2\.1:9.*no route to host"):
+        probe_rtt_seconds("192.0.2.1", 9, "wan")
 
 
 def test_probe_rtt_seconds_measures_when_connect_succeeds(
@@ -112,7 +111,6 @@ def _explicit_args() -> SimpleNamespace:
         hash_workers=3,
         batch_complete_concurrency=5,
         stream_flush_size=9,
-        upload_url_origin_override="http://127.0.0.1:9000",
     )
 
 
@@ -123,14 +121,11 @@ def _auto_args() -> SimpleNamespace:
         hash_workers=None,
         batch_complete_concurrency=None,
         stream_flush_size=None,
-        upload_url_origin_override="http://127.0.0.1:9000",
     )
 
 
 @pytest.fixture(autouse=True)
 def _no_network_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    # keep _resolve_auto_upload_params tests fast/offline: force the RTT
-    # fallback instead of opening a real TCP socket.
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset.probe_rtt_seconds",
         lambda host, port, storage_kind: {
@@ -141,36 +136,45 @@ def _no_network_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_resolve_auto_upload_params_fills_none_values(
+def test_resolve_local_upload_params_fills_only_cpu_values(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = _auto_args()
-    _resolve_auto_upload_params(args, api="http://127.0.0.1:6100/api/v1")
-    for name in _AUTO_PARAM_NAMES:
+    _resolve_local_upload_params(args)
+    assert args.concurrency is None
+    for name in _AUTO_PARAM_NAMES[1:]:
         assert getattr(args, name) is not None
         assert isinstance(getattr(args, name), int)
     err = capsys.readouterr().err
-    assert "auto upload params:" in err
-    assert "storage=local" in err
+    assert "auto local upload params:" in err
 
 
 def test_resolve_auto_upload_params_keeps_explicit_values(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     args = _explicit_args()
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset.probe_rtt_seconds",
+        lambda *_args: pytest.fail("explicit upload params must not trigger an RTT probe"),
+    )
     before = {name: getattr(args, name) for name in _AUTO_PARAM_NAMES}
-    _resolve_auto_upload_params(args, api="http://127.0.0.1:6100/api/v1")
+    _resolve_local_upload_params(args)
     after = {name: getattr(args, name) for name in _AUTO_PARAM_NAMES}
     assert after == before
     # nothing was auto-filled, so no log line should be emitted
-    assert "auto upload params:" not in capsys.readouterr().err
+    assert "auto local upload params:" not in capsys.readouterr().err
 
 
-def test_resolve_auto_upload_params_uses_api_host_when_no_override(
+def test_resolve_transport_concurrency_uses_signed_storage_host(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = _auto_args()
-    args.upload_url_origin_override = ""
-    _resolve_auto_upload_params(args, api="http://127.0.0.1:6100/api/v1")
+    _resolve_transport_concurrency(
+        args,
+        upload_url="http://192.168.1.10:9000/bucket/key?X-Amz-Signature=secret",
+    )
     assert args.concurrency is not None
-    assert "storage=local" in capsys.readouterr().err
+    error_output = capsys.readouterr().err
+    assert "storage_host=192.168.1.10:9000" in error_output
+    assert "storage=lan" in error_output
+    assert "secret" not in error_output

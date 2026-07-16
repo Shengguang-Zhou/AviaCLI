@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
+from avia_cli.commands.dataset import (
+    _print_inspect_result,
+    _print_verify_result,
+    handle_dataset_command,
+)
+from avia_cli.commands.imports import handle_import_command
 from avia_cli.core.uploads.inspect import (
     build_cleanup_plan,
     inspect_dataset,
@@ -19,7 +26,7 @@ def _write_yolo_dataset(root: Path, *, with_label: bool = True) -> None:
     images.mkdir(parents=True)
     labels.mkdir(parents=True)
     (root / "classes.txt").write_text("aircraft\n", encoding="utf-8")
-    (images / "a.jpg").write_bytes(b"not-a-real-image")
+    Image.new("RGB", (16, 12)).save(images / "a.jpg")
     if with_label:
         (labels / "a.txt").write_text("0 0.5 0.5 0.25 0.25\n", encoding="utf-8")
 
@@ -30,10 +37,30 @@ def test_dataset_parser_exposes_inspect_verify_and_cleanup_plan(tmp_path: Path) 
     parser = _build_parser()
 
     inspect_args = parser.parse_args(
-        ["dataset", "inspect", "--source", str(source), "--format", "yolo", "--json"]
+        [
+            "dataset",
+            "inspect",
+            "--source",
+            str(source),
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+            "--json",
+        ]
     )
     verify_args = parser.parse_args(
-        ["dataset", "verify", "--source", str(source), "--format", "yolo", "--json"]
+        [
+            "dataset",
+            "verify",
+            "--source",
+            str(source),
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+            "--json",
+        ]
     )
     cleanup_args = parser.parse_args(
         [
@@ -56,13 +83,255 @@ def test_dataset_parser_exposes_inspect_verify_and_cleanup_plan(tmp_path: Path) 
     assert cleanup_args.dataset_command == "cleanup-plan"
 
 
+@pytest.mark.parametrize("command", ["inspect", "verify", "upload"])
+@pytest.mark.parametrize("option", ["--max-files", "--max-samples"])
+def test_dataset_commands_reject_historical_truncation_options(command: str, option: str) -> None:
+    argv = ["dataset", command]
+    if command == "upload":
+        argv.extend(["--project", "proj_123456789abc"])
+    argv.extend(
+        [
+            "--source",
+            "/data/example",
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+            option,
+            "1",
+        ]
+    )
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["auth", "login", "--device-timeout", "0"],
+        ["auth", "login", "--poll-interval", "0"],
+        ["dataset", "cleanup-plan", "--project", "p", "--limit", "0"],
+        ["dataset", "cleanup-plan", "--project", "p", "--limit", "201"],
+        ["dataset", "upload", "--project", "p", "--concurrency", "0"],
+        ["dataset", "upload", "--project", "p", "--batch-size", "1001"],
+        ["dataset", "upload", "--project", "p", "--hash-workers", "0"],
+        ["dataset", "upload", "--project", "p", "--stream-flush-size", "0"],
+        ["dataset", "upload", "--project", "p", "--state-flush-every", "0"],
+        ["dataset", "upload", "--project", "p", "--state-flush-interval", "0"],
+        ["dataset", "upload", "--project", "p", "--upload-retries", "0"],
+        ["dataset", "upload", "--project", "p", "--upload-connect-timeout", "0"],
+        ["dataset", "upload", "--project", "p", "--poll-interval", "0"],
+    ],
+)
+def test_numeric_cli_contracts_reject_invalid_values_before_execution(argv: list[str]) -> None:
+    if argv[:2] == ["dataset", "upload"]:
+        argv.extend(["--source", "/data/example", "--format", "yolo", "--task-key", "detect"])
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["import", "scan", "--source", "/data/example"],
+        [
+            "import",
+            "create",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            "s3://bucket/prefix",
+        ],
+        ["dataset", "scan", "--source", "/data/example"],
+        ["dataset", "inspect", "--source", "/data/example"],
+        ["dataset", "verify", "--source", "/data/example"],
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            "/data/example",
+        ],
+    ],
+)
+def test_dataset_commands_require_explicit_format_and_task_key(argv: list[str]) -> None:
+    parser = _build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    ("format_name", "task_key"),
+    [
+        ("yolo", "detect"),
+        ("yolo", "classify"),
+        ("yolo", "segment"),
+        ("yolo", "pose"),
+        ("yolo", "obb"),
+        ("coco", "detect"),
+        ("coco", "segment"),
+        ("coco", "pose"),
+        ("imagenet", "classify"),
+        ("anomalib", "ad"),
+    ],
+)
+def test_dataset_parser_accepts_exact_format_task_matrix(format_name: str, task_key: str) -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(
+        [
+            "dataset",
+            "verify",
+            "--source",
+            "/data/example",
+            "--format",
+            format_name,
+            "--task-key",
+            task_key,
+        ]
+    )
+
+    assert args.format == format_name
+    assert args.task_key == task_key
+
+
+@pytest.mark.parametrize(
+    ("format_name", "task_key"),
+    [
+        ("yolo", "ad"),
+        ("coco", "classify"),
+        ("coco", "obb"),
+        ("imagenet", "detect"),
+        ("anomalib", "classify"),
+    ],
+)
+def test_invalid_folder_upload_pair_fails_before_auth_or_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    format_name: str,
+    task_key: str,
+) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            str(tmp_path),
+            "--format",
+            format_name,
+            "--task-key",
+            task_key,
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.dataset.api_from_args",
+        lambda _args: pytest.fail("invalid pair reached auth resolution"),
+    )
+
+    with pytest.raises(SystemExit, match=f"format '{format_name}'.*task '{task_key}'"):
+        handle_dataset_command(args)
+
+
+def test_invalid_source_import_pair_fails_before_auth_or_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "import",
+            "create",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            "s3://bucket/prefix",
+            "--format",
+            "imagenet",
+            "--task-key",
+            "detect",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.api_from_args",
+        lambda _args: pytest.fail("invalid pair reached auth resolution"),
+    )
+
+    with pytest.raises(SystemExit, match=r"format 'imagenet'.*task 'detect'"):
+        handle_import_command(args)
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["s3://bucket/prefix/", "/datasets/prefix/", "datasets/prefix", " datasets/prefix/"],
+)
+def test_source_import_rejects_noncanonical_object_prefix_before_auth(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = _build_parser().parse_args(
+        [
+            "import",
+            "create",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            source,
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.api_from_args",
+        lambda _args: pytest.fail("invalid object-prefix URI reached auth resolution"),
+    )
+
+    with pytest.raises(SystemExit, match="canonical bare object path"):
+        handle_import_command(args)
+
+
+def test_human_readable_inspect_and_verify_output_carries_task_key(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    summary = {
+        "format": "yolo",
+        "task_key": "pose",
+        "file_count": 3,
+        "image_count": 1,
+        "label_count": 1,
+        "total_bytes": 100,
+    }
+
+    _print_inspect_result(summary, json_output=False)
+    _print_verify_result(
+        {
+            **summary,
+            "status": "ok",
+            "error_count": 0,
+            "warning_count": 0,
+        },
+        json_output=False,
+    )
+
+    output = capsys.readouterr().out
+    assert "yolo/pose dataset" in output
+    assert "dataset verify yolo/pose ok" in output
+
+
 def test_inspect_dataset_returns_compact_manifest_summary(tmp_path: Path) -> None:
     source = tmp_path / "dataset"
     _write_yolo_dataset(source)
 
-    result = inspect_dataset(source=source, format_name="yolo")
+    result = inspect_dataset(source=source, format_name="yolo", task_key="detect")
 
     assert result["format"] == "yolo"
+    assert result["task_key"] == "detect"
     assert result["file_count"] == 3
     assert result["image_count"] == 1
     assert result["label_count"] == 1
@@ -70,20 +339,19 @@ def test_inspect_dataset_returns_compact_manifest_summary(tmp_path: Path) -> Non
     assert "files" not in result
 
 
-def test_verify_dataset_reports_missing_yolo_labels_without_failing_upload(
+def test_verify_dataset_fails_on_missing_yolo_labels(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "dataset"
     _write_yolo_dataset(source, with_label=False)
 
-    result = verify_dataset(source=source, format_name="yolo")
+    result = verify_dataset(source=source, format_name="yolo", task_key="detect")
 
-    assert result["status"] == "ok"
-    assert result["error_count"] == 0
-    warnings = result["warnings"]
-    assert warnings
-    assert warnings[0]["code"] == "missing_yolo_label"
-    assert warnings[0]["path"] == "images/train/a.jpg"
+    assert result["status"] == "failed"
+    assert result["error_count"] == 1
+    assert result["errors"][0]["code"] == "missing_yolo_label"
+    assert result["errors"][0]["path"] == "images/train/a.jpg"
+    assert result["warnings"] == []
 
 
 def test_verify_dataset_fails_when_yolo_has_no_images(tmp_path: Path) -> None:
@@ -91,11 +359,10 @@ def test_verify_dataset_fails_when_yolo_has_no_images(tmp_path: Path) -> None:
     (source / "labels").mkdir(parents=True)
     (source / "labels" / "orphan.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
 
-    result = verify_dataset(source=source, format_name="yolo")
+    result = verify_dataset(source=source, format_name="yolo", task_key="detect")
 
     assert result["status"] == "failed"
-    assert result["error_count"] == 1
-    assert result["errors"][0]["code"] == "no_images"
+    assert any(error["code"] == "no_images" for error in result["errors"])
 
 
 def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
@@ -106,18 +373,59 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
     state_dir = source / ".avia" / "imports"
     project_state = state_dir / "proj_123456789abc"
     project_state.mkdir(parents=True)
-    state_path = project_state / "imp_done.json"
+    idempotency_key = "5d74e1c1-f1e4-4b4b-9b42-cae872f71c4a"
+    state_path = project_state / f"{idempotency_key}.json"
     state_path.write_text(
         json.dumps(
             {
+                "schema_version": 3,
+                "api": "http://127.0.0.1:8080/api/v1",
+                "phase": "completed",
                 "project_id": "proj_123456789abc",
                 "import_id": "imp_done",
+                "idempotency_key": idempotency_key,
                 "source": str(source.resolve()),
                 "format": "yolo",
-                "completed": True,
+                "task_key": "detect",
+                "session_payload": {
+                    "idempotency_key": idempotency_key,
+                    "format": "yolo",
+                    "root_name": "dataset",
+                    "task_key": "detect",
+                    "classes": ["aircraft"],
+                    "file_count": 1,
+                    "total_bytes": 1,
+                },
+                "complete_response": {
+                    "workspace_id": "ws_123",
+                    "project_id": "proj_123456789abc",
+                    "import_id": "imp_done",
+                    "status": "queued",
+                    "dataset_manifest_ref": {"id": "dm_123"},
+                    "read_lease": {"id": "lease_123"},
+                    "reason": "queued",
+                    "dispatch_mode": "celery",
+                    "worker_task_id": "task_123",
+                    "dataset_version_id": "dv_123",
+                    "version_ref": {"id": "dv_123"},
+                },
                 "files": {
-                    "images/train/a.jpg": {"uploaded": True, "streamed": True},
-                    "labels/train/a.txt": {"uploaded": True, "streamed": True},
+                    "classes.txt": {
+                        "uploaded": True,
+                        "streamed": True,
+                        "size_bytes": 1,
+                        "sha256": "a" * 64,
+                        "width": 0,
+                        "height": 0,
+                        "object_key": "imports/imp_done/classes.txt",
+                        "source_identity": {
+                            "device": 1,
+                            "inode": 1,
+                            "size_bytes": 1,
+                            "mtime_ns": 1,
+                            "ctime_ns": 1,
+                        },
+                    }
                 },
             }
         ),
@@ -132,10 +440,19 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                 {
                     "import_id": "imp_done",
                     "status": "succeeded",
+                    "job_type": "dataset.import.yolo",
+                    "object_key": "imports/imp_done/manifest.json",
                     "progress": {"phase": "done"},
+                    "error": {},
+                    "dataset_validation": None,
+                    "dataset_version_id": "dv_123",
+                    "version_ref": {"id": "dv_123"},
+                    "created_at": "2026-07-15T10:00:00+00:00",
+                    "updated_at": "2026-07-15T10:01:00+00:00",
                 }
             ],
             "next_cursor": None,
+            "project_id": "proj_123456789abc",
         }
 
     monkeypatch.setattr(
@@ -161,6 +478,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
     assert result["storage_boundary"] == "server_owned"
     assert result["server_imports"][0]["import_id"] == "imp_done"
     assert result["local_states"][0]["state_path"] == str(state_path)
+    assert result["local_states"][0]["task_key"] == "detect"
     assert result["actions"] == [
         {
             "kind": "remove_local_state",
@@ -168,3 +486,71 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
             "reason": "server import is terminal and local resume state is completed",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda item: item.pop("job_type"),
+        lambda item: item.update({"legacy_source": "archive"}),
+        lambda item: item.update({"progress": None}),
+    ],
+)
+def test_cleanup_plan_rejects_noncanonical_ingestion_job_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation
+) -> None:
+    entry = {
+        "import_id": "imp_done",
+        "status": "succeeded",
+        "job_type": "dataset.import.yolo",
+        "object_key": "imports/imp_done/manifest.json",
+        "progress": {"phase": "done"},
+        "error": {},
+        "dataset_validation": None,
+        "dataset_version_id": "dv_123",
+        "version_ref": {"id": "dv_123"},
+        "created_at": "2026-07-15T10:00:00+00:00",
+        "updated_at": "2026-07-15T10:01:00+00:00",
+    }
+    mutation(entry)
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.inspect._request_json_with_retries",
+        lambda **_kwargs: {
+            "imports": [entry],
+            "next_cursor": None,
+            "project_id": "proj_123456789abc",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="ingestion-jobs entry"):
+        build_cleanup_plan(
+            api="http://127.0.0.1:8080/api/v1",
+            token="token",
+            project_id="proj_123456789abc",
+            state_dir=tmp_path / "state",
+        )
+
+
+def test_cleanup_plan_rejects_corrupt_local_state_with_exact_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_dir = tmp_path / "state"
+    path = state_dir / "proj_123456789abc" / "broken.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{", encoding="utf-8")
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.inspect._request_json_with_retries",
+        lambda **_kwargs: {
+            "imports": [],
+            "next_cursor": None,
+            "project_id": "proj_123456789abc",
+        },
+    )
+
+    with pytest.raises(SystemExit, match=rf"invalid cleanup state {path}"):
+        build_cleanup_plan(
+            api="http://127.0.0.1:8080/api/v1",
+            token="token",
+            project_id="proj_123456789abc",
+            state_dir=state_dir,
+        )

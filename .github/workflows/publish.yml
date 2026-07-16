@@ -1,10 +1,7 @@
 name: package
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -26,16 +23,21 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync --all-packages --group dev
+        run: uv sync --frozen --all-packages --group dev
 
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run pytest -W error -p no:cacheprovider -q
 
       - name: Run lint
-        run: uv run ruff check packages tests
+        run: |
+          uv run ruff check packages tests
+          uv run ruff format --check packages tests
 
       - name: Build distributions
-        run: uv build --package avia-cli
+        run: |
+          uv build --package avia-cli
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
 
       - uses: actions/upload-artifact@v4
         with:

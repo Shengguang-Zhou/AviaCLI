@@ -18,23 +18,25 @@ def _dict_at(value: object, *path: str) -> dict[str, Any]:
 def attach_upload_refs(result: dict[str, Any]) -> dict[str, Any]:
     sources = (
         _dict_at(result, "complete"),
-        _dict_at(result, "multipart", "complete"),
         _dict_at(result, "job"),
     )
     for key in _REF_KEYS:
-        if isinstance(result.get(key), dict):
-            continue
-        for source in sources:
-            ref = source.get(key)
-            if isinstance(ref, dict):
-                result[key] = dict(ref)
-                break
+        candidates = [result.get(key), *(source.get(key) for source in sources)]
+        refs = [dict(item) for item in candidates if isinstance(item, dict)]
+        if any(item is not None and not isinstance(item, dict) for item in candidates):
+            raise RuntimeError(f"upload response {key} must be an object when present")
+        if refs and any(ref != refs[0] for ref in refs[1:]):
+            raise RuntimeError(f"upload response contains conflicting {key} identities")
+        if refs:
+            result[key] = refs[0]
 
-    if not isinstance(result.get("read_lease"), dict):
-        for source in sources:
-            lease = source.get("read_lease")
-            if isinstance(lease, dict):
-                result["read_lease"] = dict(lease)
-                break
+    candidates = [result.get("read_lease"), *(source.get("read_lease") for source in sources)]
+    leases = [dict(item) for item in candidates if isinstance(item, dict)]
+    if any(item is not None and not isinstance(item, dict) for item in candidates):
+        raise RuntimeError("upload response read_lease must be an object when present")
+    if leases and any(lease != leases[0] for lease in leases[1:]):
+        raise RuntimeError("upload response contains conflicting read_lease identities")
+    if leases:
+        result["read_lease"] = leases[0]
 
     return result

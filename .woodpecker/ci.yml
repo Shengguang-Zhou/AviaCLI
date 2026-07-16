@@ -1,0 +1,30 @@
+when:
+  - event: [pull_request, manual]
+
+labels:
+  backend: local
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git:2.8.0
+    settings:
+      lfs: false
+
+steps:
+  quality-and-package:
+    image: bash
+    environment:
+      PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      UV_CACHE_DIR: /mnt/data/avia/cache/uv
+      UV_LINK_MODE: hardlink
+    commands:
+      - uv sync --frozen --all-packages --group dev
+      - uv run ruff check packages tests
+      - uv run ruff format --check packages tests
+      - uv run pytest -W error -p no:cacheprovider -q
+      - |
+        build_dir="$(mktemp -d /tmp/avia-cli-dist.XXXXXX)"
+        trap 'rm -rf "${build_dir}"' EXIT
+        uv build --package avia-cli --out-dir "${build_dir}"
+        test "$(find "${build_dir}" -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+        test "$(find "${build_dir}" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1

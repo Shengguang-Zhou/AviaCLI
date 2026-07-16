@@ -7,6 +7,10 @@ import threading
 from typing import Any
 from urllib import error as urlerror, parse, request
 
+from avia_cli.core.api_base import canonical_api_base
+from avia_cli.core.errors import decode_json_response
+from avia_cli.core.http import no_redirect
+
 
 class AuthTokenManager:
     def __init__(
@@ -19,24 +23,31 @@ class AuthTokenManager:
         refresh_token: str = "",
         timeout: float = 15.0,
     ) -> None:
-        self.api = str(api or "").rstrip("/")
+        self.api = canonical_api_base(api)
         self._token = str(token or "").strip()
         self.username = str(username or "").strip()
         self.password = str(password or "")
         self.refresh_token = str(refresh_token or "").strip()
-        self.timeout = max(1.0, float(timeout or 15.0))
+        self.timeout = float(timeout)
+        if self.timeout <= 0:
+            raise ValueError("auth timeout must be greater than zero")
         self.refresh_count = 0
         self.last_refresh_error = ""
         self._lock = threading.Lock()
 
     @classmethod
     def from_env(cls, *, api: str, token: str = "", timeout: float = 15.0) -> AuthTokenManager:
+        exact_token = str(token or os.environ.get("AVIA_TOKEN", "")).strip()
         return cls(
             api=api,
-            token=token or os.environ.get("AVIA_TOKEN", ""),
-            username=os.environ.get("AVIA_EMAIL") or os.environ.get("AVIA_USERNAME", ""),
-            password=os.environ.get("AVIA_PASSWORD", ""),
-            refresh_token=os.environ.get("AVIA_REFRESH_TOKEN", ""),
+            token=exact_token,
+            username=(
+                ""
+                if exact_token
+                else os.environ.get("AVIA_EMAIL") or os.environ.get("AVIA_USERNAME", "")
+            ),
+            password="" if exact_token else os.environ.get("AVIA_PASSWORD", ""),
+            refresh_token="" if exact_token else os.environ.get("AVIA_REFRESH_TOKEN", ""),
             timeout=timeout,
         )
 
@@ -74,26 +85,16 @@ class AuthTokenManager:
     def refresh_after_auth_error(self, exc: object, *, label: str = "request") -> bool:
         if not is_auth_error(exc) or not self.can_refresh:
             return False
-        try:
-            self.refresh(reason=f"{label}_auth_expired")
-            return True
-        except Exception as refresh_exc:  # pragma: no cover - surfaced by caller
-            self.last_refresh_error = str(refresh_exc)
-            return False
+        self.refresh(reason=f"{label}_auth_expired")
+        return True
 
     def refresh(self, *, reason: str = "manual") -> str:
         with self._lock:
             try:
-                body = (
-                    self._refresh_with_refresh_token()
-                    if self.refresh_token
-                    else self._login()
-                )
+                body = self._refresh_with_refresh_token() if self.refresh_token else self._login()
             except Exception as exc:
-                if not (self.refresh_token and self.username and self.password):
-                    raise
                 self.last_refresh_error = str(exc)
-                body = self._login()
+                raise
             token = str(body.get("access_token") or "").strip()
             if not token:
                 raise RuntimeError("auth refresh did not return access_token")
@@ -135,27 +136,28 @@ class AuthTokenManager:
 
 def _read_json(req: request.Request, *, timeout: float) -> dict[str, Any]:
     try:
-        with request.urlopen(req, timeout=timeout) as resp:
+        with no_redirect.open_no_redirect(req, timeout=timeout) as resp:
             raw = resp.read()
     except urlerror.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:1000]
         raise RuntimeError(f"auth request failed: HTTP {exc.code}: {detail}") from exc
     if not raw:
         return {}
-    return json.loads(raw.decode("utf-8"))
+    return decode_json_response(raw, url=req.full_url)
 
 
 def is_auth_error(exc: object) -> bool:
     status = getattr(exc, "status", None) or getattr(exc, "code", None)
     try:
-        if int(status or 0) in {401, 403}:
-            return True
-    except Exception:
-        pass
+        numeric_status = int(status or 0)
+    except (TypeError, ValueError):
+        numeric_status = 0
+    if numeric_status == 401:
+        return True
     text = " ".join(
         str(getattr(exc, name, "") or "") for name in ("detail", "reason", "stderr", "stdout")
     ).lower()
-    return "token_expired" in text or "unauthorized" in text or "returned error: 401" in text
+    return "token_expired" in text
 
 
 def result_is_auth_failure(result: dict[str, Any]) -> bool:
