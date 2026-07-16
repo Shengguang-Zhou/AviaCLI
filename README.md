@@ -41,8 +41,9 @@ uv build --package avia-cli
 ```
 
 Development and CI use the root-enforced uv 0.8.3 toolchain on Python 3.10, 3.11, and 3.12.
-The internal runner pre-provisions those interpreters and runs with `UV_PYTHON_DOWNLOADS=never`,
-so a missing runtime is an observable runner error rather than an implicit network download.
+The internal runner uses system Python 3.10/3.12 plus the managed-interpreter root
+`/mnt/data/avia/python` for Python 3.11. CI sets both that root and `UV_PYTHON_DOWNLOADS=never`, so
+a missing runtime is an observable runner error rather than an implicit network download.
 
 Pull requests and manual internal runs use `.woodpecker/ci.yml` on the local backend with the
 native authenticated clone. The workflow uses uv 0.8.3 to run frozen dependency sync, the complete

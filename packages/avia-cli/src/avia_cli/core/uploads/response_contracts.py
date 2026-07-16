@@ -50,6 +50,8 @@ def validate_source_import_request(payload: dict[str, object]) -> None:
         or len(set(classes)) != len(classes)
     ):
         raise RuntimeError("source-import request classes must be unique canonical strings")
+    if payload.get("format") != "yolo" and classes:
+        raise RuntimeError("source-import request classes are only valid for yolo format")
     if not isinstance(payload.get("auto_post_processing"), bool):
         raise RuntimeError("source-import request auto_post_processing must be boolean")
 

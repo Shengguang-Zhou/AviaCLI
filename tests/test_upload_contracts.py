@@ -172,6 +172,49 @@ def test_resume_rejects_multiple_exact_states_as_ambiguous(tmp_path: Path) -> No
         )
 
 
+def test_resume_ignores_completed_history_when_one_active_exact_state_exists(
+    tmp_path: Path,
+) -> None:
+    completed_path = _write_state(tmp_path, import_id="imp_completed", task_key="detect")
+    completed = json.loads(completed_path.read_text(encoding="utf-8"))
+    completed["phase"] = "completed"
+    completed["complete_response"] = {
+        "workspace_id": "ws_123",
+        "project_id": "proj_123456789abc",
+        "import_id": "imp_completed",
+        "status": "queued",
+        "dataset_manifest_ref": {"id": "dm_completed"},
+        "read_lease": {
+            "id": "lease_completed",
+            "dataset_manifest_ref_id": "dm_completed",
+        },
+        "reason": "queued",
+        "dispatch_mode": "celery",
+        "worker_task_id": "task_completed",
+        "dataset_version_id": "dsv_completed",
+        "version_ref": {"dataset_version_id": "dsv_completed"},
+    }
+    completed_path.write_text(json.dumps(completed), encoding="utf-8")
+    _write_state(
+        tmp_path,
+        import_id="imp_active",
+        task_key="detect",
+        idempotency_key="6d74e1c1-f1e4-4b4b-9b42-cae872f71c4b",
+    )
+
+    state = _load_resume_state(
+        state_dir=tmp_path,
+        project_id="proj_123456789abc",
+        api="https://avia.eurekailab.com/api/v1",
+        source="/data/coco8",
+        import_format="yolo",
+        task_key="detect",
+    )
+
+    assert state is not None
+    assert state["import_id"] == "imp_active"
+
+
 def test_upload_state_lock_rejects_a_second_writer_for_the_same_dataset(
     tmp_path: Path,
 ) -> None:
@@ -611,8 +654,15 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
     success_started = threading.Event()
     failure_released = threading.Event()
     success_finished = threading.Event()
+    probe_routes: list[object] = []
+    put_routes: list[object] = []
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset._resolve_transport_concurrency",
+        lambda _args, *, route: probe_routes.append(route),
+    )
 
     def put_with_one_failure(**kwargs: object) -> None:
+        put_routes.append(kwargs["route"])
         relative_path = Path(str(kwargs["path"])).relative_to(source).as_posix()
         if relative_path == "labels/train/a.txt":
             assert success_started.wait(timeout=1)
@@ -633,6 +683,8 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
         upload_dataset(args, api="https://avia.eurekailab.com/api/v1", token="token")
 
     assert success_finished.is_set(), "upload returned while a sibling PUT still mutated storage"
+    assert len(probe_routes) == 1
+    assert any(route is probe_routes[0] for route in put_routes)
     state_path = next(state_dir.rglob("*.json"))
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["files"]["labels/train/b.txt"]["uploaded"] is True
@@ -759,6 +811,35 @@ def test_folder_upload_validates_dataset_before_auto_tuning_network_probe(
     )
 
     with pytest.raises(SystemExit, match="invalid_yolo_detect_row"):
+        upload_dataset(args, api="https://avia.example/api/v1", token="token")
+
+
+def test_folder_upload_rejects_class_override_for_non_yolo_before_scanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123abc456def",
+            "--source",
+            str(tmp_path),
+            "--format",
+            "imagenet",
+            "--task-key",
+            "classify",
+            "--class",
+            "aircraft",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset.scan_source_manifest",
+        lambda *_args, **_kwargs: pytest.fail("invalid --class scope reached dataset scan"),
+    )
+
+    with pytest.raises(SystemExit, match="--class is only valid with --format yolo"):
         upload_dataset(args, api="https://avia.example/api/v1", token="token")
 
 

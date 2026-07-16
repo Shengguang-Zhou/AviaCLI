@@ -13,6 +13,7 @@ from avia_cli.core.uploads.dataset import (
     _resolve_local_upload_params,
     _resolve_transport_concurrency,
 )
+from avia_cli.core.uploads.transfer import UploadTransportRoute
 
 _AUTO_PARAM_NAMES = (
     "concurrency",
@@ -72,36 +73,138 @@ def test_compute_upload_params_rejects_unknown_storage_kind() -> None:
         compute_upload_params(cores=8, storage_kind="something-else", probe_rtt_s=0.002)
 
 
-def test_probe_rtt_seconds_exposes_target_when_connect_fails(
+def test_probe_rtt_seconds_exposes_target_when_request_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def boom(*_args: object, **_kwargs: object) -> object:
-        raise OSError("no route to host")
+    import requests
 
-    monkeypatch.setattr("avia_cli.core.uploads.autotune.socket.create_connection", boom)
-
-    with pytest.raises(RuntimeError, match=r"192\.0\.2\.1:9.*no route to host"):
-        probe_rtt_seconds("192.0.2.1", 9, "wan")
-
-
-def test_probe_rtt_seconds_measures_when_connect_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FakeConn:
-        def __enter__(self) -> _FakeConn:
+    class _FailingSession:
+        def __enter__(self) -> _FailingSession:
             return self
 
         def __exit__(self, *_exc: object) -> bool:
             return False
 
-    monkeypatch.setattr(
-        "avia_cli.core.uploads.autotune.socket.create_connection",
-        lambda *_a, **_k: _FakeConn(),
+        def head(self, *_args: object, **_kwargs: object) -> object:
+            raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr("requests.Session", _FailingSession)
+
+    route = UploadTransportRoute(
+        upload_url="https://192.0.2.1/upload?signature=secret",
+        proxy_items=(),
     )
-    rtt = probe_rtt_seconds("127.0.0.1", 9000, "local")
-    # a real measurement (>=0), well below the fallback
+    with pytest.raises(RuntimeError, match=r"192\.0\.2\.1:443.*ConnectionError"):
+        probe_rtt_seconds(route, "wan")
+
+
+def test_probe_rtt_seconds_measures_when_connect_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy_settings = {"https": "http://proxy.example:3128"}
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeResponse:
+        status_code = 403
+
+        def __enter__(self) -> _FakeResponse:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.trust_env = True
+
+        def __enter__(self) -> _FakeSession:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def head(self, url: str, **kwargs: object) -> _FakeResponse:
+            calls.append((url, kwargs))
+            return _FakeResponse()
+
+    session = _FakeSession()
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    url = "https://objects.example/upload?X-Amz-Signature=secret"
+    route = UploadTransportRoute(upload_url=url, proxy_items=tuple(proxy_settings.items()))
+    rtt = probe_rtt_seconds(route, "wan")
+
     assert rtt >= 0.0
-    assert rtt < 0.0005
+    assert len(calls) == 3
+    assert all(call_url == url for call_url, _kwargs in calls)
+    assert all(kwargs["proxies"] == proxy_settings for _url, kwargs in calls)
+    assert all(kwargs["allow_redirects"] is False for _url, kwargs in calls)
+    assert session.trust_env is False
+
+
+def test_probe_rtt_never_reloads_environment_after_route_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import requests
+
+    frozen_proxies = {"all": "http://frozen-proxy.example:3128"}
+    monkeypatch.setattr(
+        "requests.sessions.get_environ_proxies",
+        lambda *_args, **_kwargs: pytest.fail("RTT probe reloaded environment proxies"),
+    )
+
+    def send(
+        _session: requests.Session,
+        _request: requests.PreparedRequest,
+        **kwargs: object,
+    ) -> requests.Response:
+        assert kwargs["proxies"] == frozen_proxies
+        response = requests.Response()
+        response.status_code = 403
+        response.reason = "Forbidden"
+        response._content = b""
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr("requests.Session.send", send)
+    route = UploadTransportRoute(
+        upload_url="https://objects.example/upload?signature=secret",
+        proxy_items=tuple(frozen_proxies.items()),
+    )
+
+    assert probe_rtt_seconds(route, "wan") >= 0.0
+
+
+def test_probe_rtt_seconds_rejects_proxy_authentication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ProxyAuthResponse:
+        status_code = 407
+
+        def __enter__(self) -> _ProxyAuthResponse:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    class _ProxySession:
+        def __enter__(self) -> _ProxySession:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def head(self, *_args: object, **_kwargs: object) -> _ProxyAuthResponse:
+            return _ProxyAuthResponse()
+
+    monkeypatch.setattr("requests.Session", _ProxySession)
+
+    route = UploadTransportRoute(
+        upload_url="https://objects.example/upload?signature=secret",
+        proxy_items=(("https", "http://proxy.example:3128"),),
+    )
+    with pytest.raises(RuntimeError, match=r"proxy authentication failed.*407"):
+        probe_rtt_seconds(route, "wan")
 
 
 def _explicit_args() -> SimpleNamespace:
@@ -128,7 +231,7 @@ def _auto_args() -> SimpleNamespace:
 def _no_network_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset.probe_rtt_seconds",
-        lambda host, port, storage_kind: {
+        lambda _route, storage_kind: {
             "local": 0.0005,
             "lan": 0.002,
             "wan": 0.03,
@@ -171,7 +274,10 @@ def test_resolve_transport_concurrency_uses_signed_storage_host(
     args = _auto_args()
     _resolve_transport_concurrency(
         args,
-        upload_url="http://192.168.1.10:9000/bucket/key?X-Amz-Signature=secret",
+        route=UploadTransportRoute(
+            upload_url="http://192.168.1.10:9000/bucket/key?X-Amz-Signature=secret",
+            proxy_items=(),
+        ),
     )
     assert args.concurrency is not None
     error_output = capsys.readouterr().err

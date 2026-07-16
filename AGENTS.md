@@ -56,7 +56,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   persisted queued receipt, including non-empty `dispatch_mode` and `worker_task_id`; the client
   never weakens this contract or treats a partial replay response as success.
 - Derive hashing/batching parameters locally. Probe transport RTT only against the first validated
-  API-issued storage URL; never treat the control-plane API host as the storage host.
+  API-issued signed storage URL with a side-effect-free HEAD using the exact explicit proxy
+  snapshot that PUT will use; never treat the control-plane API host as the storage host. A
+  configured proxy failure must abort; never retry the probe by bypassing the proxy.
 - Authentication refresh is allowed only for 401 or explicit `token_expired`, never 403. An
   explicit token must never gain environment password or refresh-token credentials from another
   identity. Keyring/config mutations are atomic and roll back on either side's failure.

@@ -167,6 +167,35 @@ def test_dataset_commands_require_explicit_format_and_task_key(argv: list[str]) 
         parser.parse_args(argv)
 
 
+def test_dataset_upload_completes_local_validation_before_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123abc456def",
+            "--source",
+            str(tmp_path),
+            "--format",
+            "imagenet",
+            "--task-key",
+            "classify",
+            "--class",
+            "aircraft",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.dataset.token_from_args",
+        lambda *_args, **_kwargs: pytest.fail("authentication ran before local validation"),
+    )
+
+    with pytest.raises(SystemExit, match="--class is only valid with --format yolo"):
+        handle_dataset_command(args)
+
+
 @pytest.mark.parametrize(
     ("format_name", "task_key"),
     [
@@ -296,6 +325,34 @@ def test_source_import_rejects_noncanonical_object_prefix_before_auth(
     )
 
     with pytest.raises(SystemExit, match="canonical bare object path"):
+        handle_import_command(args)
+
+
+@pytest.mark.parametrize("classes", [["plane", "plane"], [""]])
+def test_source_import_rejects_invalid_classes_before_auth(
+    classes: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv = [
+        "import",
+        "create",
+        "--project",
+        "proj_123456789abc",
+        "--source",
+        "datasets/prefix/",
+        "--format",
+        "yolo",
+        "--task-key",
+        "detect",
+    ]
+    for class_name in classes:
+        argv.extend(["--class", class_name])
+    args = _build_parser().parse_args(argv)
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.api_from_args",
+        lambda _args: pytest.fail("invalid source-import classes reached auth resolution"),
+    )
+
+    with pytest.raises(RuntimeError, match="classes must be unique canonical strings"):
         handle_import_command(args)
 
 

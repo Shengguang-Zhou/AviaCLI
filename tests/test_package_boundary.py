@@ -87,6 +87,7 @@ def test_internal_pr_ci_uses_native_clone_shared_cache_and_runs_full_release_gat
     assert "skip_clone" not in workflow
     assert "checkout_cached_source.sh" not in workflow
     assert "UV_CACHE_DIR: /mnt/data/avia/cache/uv" in workflow
+    assert workflow.count("UV_PYTHON_INSTALL_DIR: /mnt/data/avia/python") == 2
     assert "UV_LINK_MODE: hardlink" in workflow
     assert workflow.count("UV_PYTHON_DOWNLOADS: never") == 2
     assert "UV_LINK_MODE: copy" not in workflow
@@ -174,6 +175,13 @@ def test_production_package_uses_only_aviacli_identity() -> None:
     source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(CLI_SRC.rglob("*.py")))
 
     assert "Avia SDK" not in source
+
+
+def test_package_readme_uses_the_canonical_clone_plugin_version() -> None:
+    readme = (ROOT / "packages" / "avia-cli" / "README.md").read_text(encoding="utf-8")
+
+    assert "plugin-git:2.9.2" in readme
+    assert "plugin-git:2.8.0" not in readme
 
 
 def test_upload_code_has_no_origin_or_host_rewrite_bypass() -> None:

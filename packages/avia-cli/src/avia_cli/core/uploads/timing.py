@@ -119,7 +119,7 @@ def put_file_with_retries(
     *,
     put_file: Callable[..., None],
     is_retryable: Callable[[BaseException], bool],
-    upload_url: str,
+    route: Any,
     path: Any,
     expected_identity: SourceIdentity | dict[str, object],
     headers: dict[str, object],
@@ -137,7 +137,7 @@ def put_file_with_retries(
         for attempt in range(1, attempts + 1):
             try:
                 put_file(
-                    upload_url=upload_url,
+                    route=route,
                     source=source,
                     headers=headers,
                     connect_timeout=connect_timeout,

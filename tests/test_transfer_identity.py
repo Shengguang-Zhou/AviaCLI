@@ -16,6 +16,7 @@ from avia_cli.core.uploads.source_file import (
     SourceFileChangedError,
     capture_source_identity,
 )
+from avia_cli.core.uploads.transfer import UploadTransportRoute
 
 
 class _Response:
@@ -34,6 +35,13 @@ class _Session:
 
     def __exit__(self, *_args: object) -> None:
         return None
+
+
+def _route(url: str = "https://objects.example/upload") -> UploadTransportRoute:
+    return UploadTransportRoute(
+        upload_url=url,
+        proxy_items=(("all", None), ("http", None), ("https", None)),
+    )
 
 
 @pytest.mark.parametrize(
@@ -74,7 +82,7 @@ def test_folder_put_rejects_symlink_replacement_before_any_request(
 
     with pytest.raises(SourceFileChangedError, match="symbolic link"):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers={},
@@ -83,6 +91,83 @@ def test_folder_put_rejects_symlink_replacement_before_any_request(
         )
 
     assert request_count == 0
+
+
+def test_folder_put_uses_the_explicit_frozen_route_proxy_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "sample.bin"
+    path.write_bytes(b"validated")
+    identity = capture_source_identity(path)
+    proxy_settings = {"https": "http://proxy.example:3128"}
+    observed: list[dict[str, object]] = []
+
+    def put(*_args: object, **kwargs: object) -> _Response:
+        kwargs["data"].read()  # type: ignore[union-attr]
+        observed.append(kwargs)
+        return _Response()
+
+    session = _Session(put)
+    monkeypatch.setattr("requests.Session", lambda: session)
+    route = UploadTransportRoute(
+        upload_url="https://objects.example/upload",
+        proxy_items=tuple(proxy_settings.items()),
+    )
+
+    _put_file_with_retries(
+        route=route,
+        path=path,
+        expected_identity=identity,
+        headers={},
+        retries=1,
+        base_delay_sec=0.001,
+    )
+
+    assert len(observed) == 1
+    assert observed[0]["proxies"] == proxy_settings
+    assert session.trust_env is False
+
+
+def test_folder_put_never_reloads_environment_after_route_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "sample.bin"
+    path.write_bytes(b"validated")
+    identity = capture_source_identity(path)
+    frozen_proxies = {"all": "http://frozen-proxy.example:3128"}
+
+    monkeypatch.setattr(
+        "requests.sessions.get_environ_proxies",
+        lambda *_args, **_kwargs: pytest.fail("PUT reloaded environment proxies"),
+    )
+
+    def send(
+        _session: requests.Session,
+        request: requests.PreparedRequest,
+        **kwargs: object,
+    ) -> requests.Response:
+        assert kwargs["proxies"] == frozen_proxies
+        request.body.read()
+        response = requests.Response()
+        response.status_code = 200
+        response.reason = "OK"
+        response._content = b""
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr("requests.Session.send", send)
+
+    _put_file_with_retries(
+        route=UploadTransportRoute(
+            upload_url="https://objects.example/upload",
+            proxy_items=tuple(frozen_proxies.items()),
+        ),
+        path=path,
+        expected_identity=identity,
+        headers={},
+        retries=1,
+        base_delay_sec=0.001,
+    )
 
 
 def test_folder_put_rejects_different_inode_before_any_request(
@@ -101,7 +186,7 @@ def test_folder_put_rejects_different_inode_before_any_request(
 
     with pytest.raises(SourceFileChangedError, match="identity changed"):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers={},
@@ -133,7 +218,7 @@ def test_folder_put_detects_in_place_change_before_success(
 
     with pytest.raises(SourceFileChangedError, match="changed during transfer"):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers={},
@@ -164,7 +249,7 @@ def test_folder_retry_reuses_one_verified_fd_and_one_requests_transport(
     monkeypatch.setattr("requests.Session", lambda: _Session(flaky_put))
 
     _put_file_with_retries(
-        upload_url="https://objects.example/upload",
+        route=_route(),
         path=path,
         expected_identity=identity,
         headers={},
@@ -208,7 +293,7 @@ def test_requests_contract_errors_are_never_retried(
 
     with pytest.raises(RuntimeError, match="folder PUT request contract is invalid"):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers={},
@@ -246,7 +331,7 @@ def test_invalid_signed_headers_fail_before_session_creation(
 
     with pytest.raises(RuntimeError, match="upload required_headers"):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers=headers,
@@ -284,7 +369,7 @@ def test_folder_put_never_follows_or_accepts_redirects(
 
     with pytest.raises(_UploadHTTPError, match=rf"HTTP {status}"):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers={},
@@ -327,7 +412,7 @@ def test_folder_put_contract_errors_fail_before_request_without_retry(
 
     with pytest.raises(RuntimeError):
         _put_file_with_retries(
-            upload_url="https://objects.example/upload",
+            route=_route(),
             path=path,
             expected_identity=identity,
             headers=headers,
@@ -351,5 +436,5 @@ def test_folder_transport_has_no_direct_or_curl_fallback() -> None:
     ).read_text(encoding="utf-8")
 
     assert "put_file_curl" not in source
-    assert "trust_env = False" not in source
+    assert "trust_env = False" in source
     assert "subprocess.run" not in source

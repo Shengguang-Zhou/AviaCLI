@@ -30,7 +30,10 @@ from avia_cli.core.uploads.response_contracts import (
 from avia_cli.core.uploads.state import _ensure_sha256_batch as _support_ensure_sha256_batch
 from avia_cli.core.uploads.source_file import SourceIdentity, VerifiedSourceFile
 from avia_cli.core.uploads.timing import put_file_with_retries as _retry_put_file
-from avia_cli.core.uploads.transfer import put_file_requests as _transfer_put_file_requests
+from avia_cli.core.uploads.transfer import (
+    UploadTransportRoute,
+    put_file_requests as _transfer_put_file_requests,
+)
 
 _DEFAULT_UPLOAD_READ_TIMEOUT = 45.0
 _IMPORT_POLL_FAST_DELAYS_SEC = (0.25, 0.5, 1.0, 2.0, 4.0)
@@ -259,14 +262,14 @@ def _is_transient_request_error(exc: Exception) -> bool:
 
 def _put_file(
     *,
-    upload_url: str,
+    route: UploadTransportRoute,
     source: VerifiedSourceFile,
     headers: dict[str, object],
     connect_timeout: float = 15.0,
     read_timeout: float = _DEFAULT_UPLOAD_READ_TIMEOUT,
 ) -> None:
     _transfer_put_file_requests(
-        upload_url=upload_url,
+        route=route,
         source=source,
         headers=headers,
         upload_error=_UploadHTTPError,
@@ -277,7 +280,7 @@ def _put_file(
 
 def _put_file_with_retries(
     *,
-    upload_url: str,
+    route: UploadTransportRoute,
     path: Path,
     expected_identity: SourceIdentity | dict[str, object],
     headers: dict[str, object],
@@ -289,7 +292,7 @@ def _put_file_with_retries(
     _retry_put_file(
         put_file=_put_file,
         is_retryable=_is_retryable_upload_error,
-        upload_url=upload_url,
+        route=route,
         path=path,
         expected_identity=expected_identity,
         headers=headers,

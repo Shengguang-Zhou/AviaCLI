@@ -18,6 +18,7 @@ from avia_cli.core.uploads.response_contracts import (
     decode_dataset_session_response,
     decode_import_job_response,
     decode_source_import_response,
+    validate_source_import_request,
 )
 
 PROJECT_ID = "proj_123456789abc"
@@ -73,6 +74,14 @@ def _source_import_contract(
             }
         )
     return request_payload, response
+
+
+def test_source_import_rejects_class_override_for_non_yolo_format() -> None:
+    request_payload, _response = _source_import_contract(auto_post_processing=False)
+    request_payload.update({"format": "imagenet", "task_key": "classify"})
+
+    with pytest.raises(RuntimeError, match="classes are only valid for yolo"):
+        validate_source_import_request(request_payload)
 
 
 @pytest.mark.parametrize(

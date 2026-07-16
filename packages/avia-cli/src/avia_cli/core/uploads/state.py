@@ -15,6 +15,7 @@ from filelock import FileLock, Timeout
 
 from avia_cli.core.api_base import canonical_api_base
 from avia_cli.core.uploads.contracts import require_object_prefix_uri
+from avia_cli.core.uploads.response_contracts import validate_source_import_request
 from avia_cli.core.uploads.manifest import (
     _is_image_path,
 )
@@ -58,14 +59,19 @@ _STATE_FILE_FIELDS = {
 
 
 def _source_import_payload(args: argparse.Namespace) -> dict[str, object]:
-    return {
+    classes = list(args.class_name or [])
+    if classes and str(args.format) != "yolo":
+        raise SystemExit("--class is only valid with --format yolo")
+    payload: dict[str, object] = {
         "source_kind": str(args.source_kind),
         "uri": require_object_prefix_uri(args.source),
         "format": str(args.format),
         "task_key": str(args.task_key),
-        "classes": list(args.class_name or []),
+        "classes": classes,
         "auto_post_processing": bool(args.auto_post_processing),
     }
+    validate_source_import_request(payload)
+    return payload
 
 
 def _chunked(items: list[dict[str, object]], size: int) -> Iterable[list[dict[str, object]]]:
@@ -286,6 +292,11 @@ def _load_resume_state(
         for path, state in near_matches
         if state["api"] == api and state["task_key"] == task_key
     ]
+    active_exact_matches = [
+        (path, state) for path, state in exact_matches if state["phase"] != "completed"
+    ]
+    if active_exact_matches:
+        exact_matches = active_exact_matches
     if len(exact_matches) == 1:
         return exact_matches[0][1]
     if len(exact_matches) > 1:

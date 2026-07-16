@@ -5,14 +5,16 @@ measure the host class (local/LAN/WAN) and round-trip time, then size the
 connection pool from bandwidth-delay product, Little's Law, and CPU count so
 users do not hand-tune ``--concurrency`` on every run.
 
-Pure stdlib, no third-party dependencies.
+The RTT probe uses the same explicit requests proxy snapshot as the PUT path.
 """
 
 from __future__ import annotations
 
 import math
-import socket
 import time
+from urllib.parse import urlsplit
+
+from avia_cli.core.uploads.transfer import UploadTransportRoute
 
 __all__ = (
     "compute_cpu_upload_params",
@@ -51,26 +53,55 @@ def detect_storage_kind(host: str) -> str:
     return "wan"
 
 
-def probe_rtt_seconds(host: str, port: int, storage_kind: str) -> float:
-    """Measure TCP connect RTT (minimum of three successful attempts)."""
+def probe_rtt_seconds(route: UploadTransportRoute, storage_kind: str) -> float:
+    """Measure three fresh HEAD round trips over the exact PUT transport route."""
     if storage_kind not in _PER_CONN_MBPS:
         raise ValueError(f"unsupported storage kind: {storage_kind}")
+    parsed = urlsplit(route.upload_url)
+    host = parsed.hostname
+    if host is None:
+        raise RuntimeError("signed upload URL must expose an absolute storage host")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    import requests
+
     best: float | None = None
-    last_error: OSError | None = None
+    last_error: BaseException | None = None
     for _ in range(3):
         start = time.perf_counter()
         try:
-            with socket.create_connection((host, port), timeout=2.0):
-                pass
-        except OSError as exc:
+            with requests.Session() as session:
+                session.trust_env = False
+                with session.head(
+                    route.upload_url,
+                    timeout=(2.0, 2.0),
+                    allow_redirects=False,
+                    stream=True,
+                    proxies=route.request_proxies(),
+                ) as response:
+                    status = int(response.status_code)
+                    if status == 407:
+                        raise RuntimeError("RTT probe proxy authentication failed: status=407")
+                    if 300 <= status < 400:
+                        raise RuntimeError(f"RTT probe rejected storage redirect: status={status}")
+                    if status in {408, 429} or status >= 500:
+                        last_error = RuntimeError(
+                            f"storage route returned retryable status={status}"
+                        )
+                        continue
+                    elapsed = time.perf_counter() - start
+        except requests.exceptions.RequestException as exc:
             last_error = exc
             continue
-        elapsed = time.perf_counter() - start
         if best is None or elapsed < best:
             best = elapsed
     if best is None:
-        assert last_error is not None
-        raise RuntimeError(f"RTT probe failed for {host}:{port}: {last_error}") from last_error
+        if last_error is None:
+            raise RuntimeError(f"RTT probe failed for {host}:{port}: no successful attempt")
+        if isinstance(last_error, RuntimeError):
+            raise RuntimeError(f"RTT probe failed for {host}:{port}: {last_error}") from last_error
+        raise RuntimeError(
+            f"RTT probe failed for {host}:{port}: {type(last_error).__name__}"
+        ) from last_error
     return best
 
 

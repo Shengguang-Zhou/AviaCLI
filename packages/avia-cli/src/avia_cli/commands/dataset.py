@@ -4,7 +4,7 @@ import json
 
 from avia_cli.context import api_from_args, token_from_args
 from avia_cli.core.uploads.contracts import require_format_task
-from avia_cli.core.uploads.dataset import upload_dataset
+from avia_cli.core.uploads.dataset import prepare_dataset_upload, upload_prepared_dataset
 from avia_cli.core.uploads.inspect import (
     build_cleanup_plan,
     inspect_dataset,
@@ -40,6 +40,7 @@ def handle_dataset_command(args) -> int:
         )
         _print_verify_result(result, json_output=bool(args.json))
         return 0 if str(result.get("status")) == "ok" else 1
+    prepared_upload = prepare_dataset_upload(args) if args.dataset_command == "upload" else None
     api = api_from_args(args)
     token = token_from_args(args, api=api)
     if args.dataset_command == "cleanup-plan":
@@ -54,7 +55,14 @@ def handle_dataset_command(args) -> int:
         _print_cleanup_plan(result, json_output=bool(args.json))
         return 0
     if args.dataset_command == "upload":
-        result = upload_dataset(args, api=api, token=token)
+        if prepared_upload is None:
+            raise RuntimeError("dataset upload preparation is missing")
+        result = upload_prepared_dataset(
+            args,
+            api=api,
+            token=token,
+            prepared=prepared_upload,
+        )
         _print_upload_result(result, json_output=bool(args.json))
         return 0
     raise RuntimeError(f"unsupported dataset command: {args.dataset_command}")

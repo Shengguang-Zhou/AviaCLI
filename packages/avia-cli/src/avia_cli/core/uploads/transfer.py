@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from urllib import parse
 
 from avia_cli.core.errors import _UploadTransportError
 from avia_cli.core.uploads.source_file import VerifiedSourceFile
 
 _HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class UploadTransportRoute:
+    upload_url: str
+    proxy_items: tuple[tuple[str, str | None], ...]
+
+    def request_proxies(self) -> dict[str, str | None]:
+        return dict(self.proxy_items)
+
+
+def _resolved_upload_proxies(upload_url: str) -> dict[str, str | None]:
+    """Freeze the requests environment route for one validated upload URL."""
+
+    import requests
+
+    environment = requests.utils.get_environ_proxies(upload_url)
+    if requests.utils.select_proxy(upload_url, environment) is None:
+        return {"http": None, "https": None, "all": None}
+    return {str(key): str(value) for key, value in environment.items()}
+
+
+def resolve_upload_route(upload_url: str) -> UploadTransportRoute:
+    """Validate one signed URL and freeze the route shared by its probe and PUT."""
+
+    validate_upload_contract(upload_url=upload_url, headers={}, expected_length=0)
+    proxies = _resolved_upload_proxies(upload_url)
+    return UploadTransportRoute(
+        upload_url=upload_url,
+        proxy_items=tuple(sorted(proxies.items())),
+    )
 
 
 def _validated_upload_headers(
@@ -77,7 +109,7 @@ def validate_upload_contract(
 
 def put_file_requests(
     *,
-    upload_url: str,
+    route: UploadTransportRoute,
     source: VerifiedSourceFile,
     headers: dict[str, object],
     upload_error: type[RuntimeError],
@@ -88,7 +120,7 @@ def put_file_requests(
 
     expected_length = int(source.identity["size_bytes"])
     validate_upload_contract(
-        upload_url=upload_url,
+        upload_url=route.upload_url,
         headers=headers,
         expected_length=expected_length,
     )
@@ -98,12 +130,14 @@ def put_file_requests(
     handle = source.prepare()
     try:
         with requests.Session() as session:
+            session.trust_env = False
             resp = session.put(
-                upload_url,
+                route.upload_url,
                 data=handle,
                 headers=request_headers,
                 timeout=(float(connect_timeout), float(read_timeout)),
                 allow_redirects=False,
+                proxies=route.request_proxies(),
             )
     except (
         requests.exceptions.InvalidHeader,

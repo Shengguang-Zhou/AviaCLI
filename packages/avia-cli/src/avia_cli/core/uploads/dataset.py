@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -55,10 +56,24 @@ from avia_cli.core.uploads.source_file import (
     open_verified_source,
 )
 from avia_cli.core.uploads.timing import UploadTimingRecorder
-from avia_cli.core.uploads.transfer import validate_upload_contract
+from avia_cli.core.uploads.transfer import (
+    UploadTransportRoute,
+    resolve_upload_route,
+    validate_upload_contract,
+)
 from avia_cli.core.uploads.validation import require_valid_dataset
 
 _MAX_FOLDER_BATCH_SIZE = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedDatasetUpload:
+    manifest: dict[str, object]
+    source_root: Path
+    files: list[dict[str, Any]]
+    source_identities: dict[str, SourceIdentity]
+    state_dir: Path
+    validation_warnings: list[dict[str, Any]]
 
 
 def create_source_import(
@@ -207,16 +222,16 @@ def _resolve_local_upload_params(args: object) -> None:
         )
 
 
-def _resolve_transport_concurrency(args: object, *, upload_url: str) -> None:
+def _resolve_transport_concurrency(args: object, *, route: UploadTransportRoute) -> None:
     if getattr(args, "concurrency", None) is not None:
         return
-    split = urlsplit(upload_url)
+    split = urlsplit(route.upload_url)
     host = split.hostname
     if split.scheme not in {"http", "https"} or not host:
         raise RuntimeError("signed upload URL must expose an absolute storage host")
     port = split.port or (443 if split.scheme == "https" else 80)
     storage_kind = detect_storage_kind(host)
-    probe_rtt = probe_rtt_seconds(host, int(port), storage_kind)
+    probe_rtt = probe_rtt_seconds(route, storage_kind)
     cores = os.cpu_count() or 4
     concurrency = compute_transport_concurrency(
         cores=cores,
@@ -233,11 +248,13 @@ def _resolve_transport_concurrency(args: object, *, upload_url: str) -> None:
     )
 
 
-def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
-    api = canonical_api_base(api)
-    upload_started = time.monotonic()
-    upload_timing = UploadTimingRecorder(first_file_target=512)
-    project_id = str(args.project)
+def prepare_dataset_upload(args: object) -> PreparedDatasetUpload:
+    """Complete every local scan and dataset validation before authentication."""
+
+    format_name = str(args.format)
+    declared_classes = [str(name) for name in list(args.class_name or [])] or None
+    if declared_classes is not None and format_name != "yolo":
+        raise SystemExit("--class is only valid with --format yolo")
     configured_hash_workers = getattr(args, "hash_workers", None)
     validation_hash_workers = (
         int(configured_hash_workers)
@@ -248,7 +265,7 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
         args.source,
         include_dimensions=False,
         hash_workers=validation_hash_workers,
-        format_name=str(args.format),
+        format_name=format_name,
     )
     source_root = Path(str(manifest["source"]))
     files = list(manifest["files"])  # type: ignore[arg-type]
@@ -256,9 +273,9 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
     classes, validation_warnings = require_valid_dataset(
         source_root=source_root,
         manifest=manifest,
-        format_name=str(args.format),
+        format_name=format_name,
         task_key=str(args.task_key),
-        declared_classes=[str(name) for name in list(args.class_name or [])] or None,
+        declared_classes=declared_classes,
     )
     if validation_warnings:
         print(
@@ -279,11 +296,36 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
         context="source file changed during dataset validation",
     )
     manifest["classes"] = classes
-    state_dir = _state_dir(args)
+    return PreparedDatasetUpload(
+        manifest=manifest,
+        source_root=source_root,
+        files=files,
+        source_identities=source_identities,
+        state_dir=_state_dir(args),
+        validation_warnings=validation_warnings,
+    )
+
+
+def upload_prepared_dataset(
+    args: object,
+    *,
+    api: str,
+    token: object,
+    prepared: PreparedDatasetUpload,
+) -> dict[str, Any]:
+    api = canonical_api_base(api)
+    upload_started = time.monotonic()
+    upload_timing = UploadTimingRecorder(first_file_target=512)
+    project_id = str(args.project)
+    _assert_manifest_identities(
+        prepared.source_root,
+        prepared.source_identities,
+        context="source file changed after dataset validation",
+    )
     with _exclusive_upload_state_lock(
-        state_dir=state_dir,
+        state_dir=prepared.state_dir,
         project_id=project_id,
-        source=str(source_root),
+        source=str(prepared.source_root),
         import_format=str(args.format),
         task_key=str(args.task_key),
     ):
@@ -295,14 +337,23 @@ def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
             upload_started=upload_started,
             upload_timing=upload_timing,
             project_id=project_id,
-            manifest=manifest,
-            source_root=source_root,
-            files=files,
-            source_identities=source_identities,
-            state_dir=state_dir,
+            manifest=prepared.manifest,
+            source_root=prepared.source_root,
+            files=prepared.files,
+            source_identities=prepared.source_identities,
+            state_dir=prepared.state_dir,
         )
-        result["validation_warnings"] = validation_warnings
+        result["validation_warnings"] = prepared.validation_warnings
         return result
+
+
+def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
+    return upload_prepared_dataset(
+        args,
+        api=api,
+        token=token,
+        prepared=prepare_dataset_upload(args),
+    )
 
 
 def _upload_validated_dataset(
@@ -542,6 +593,7 @@ def _upload_validated_dataset(
                 and not bool(state_files.get(str(item["relative_path"]), {}).get("streamed"))
             ]
             upload_items: dict[str, dict[str, Any]] = {}
+            upload_routes: dict[str, UploadTransportRoute] = {}
             pending: list[dict[str, Any]] = []
             if pending_upload:
                 pending = _ensure_sha256_batch(
@@ -572,8 +624,11 @@ def _upload_validated_dataset(
                         headers=dict(signed_item["required_headers"]),
                         expected_length=source_identities[relative_path]["size_bytes"],
                     )
-                first_upload_url = str(urls["files"][0]["upload_url"])
-                _resolve_transport_concurrency(args, upload_url=first_upload_url)
+                    upload_routes[relative_path] = resolve_upload_route(
+                        str(signed_item["upload_url"])
+                    )
+                first_relative_path = str(urls["files"][0]["relative_path"])
+                _resolve_transport_concurrency(args, route=upload_routes[first_relative_path])
             elif not pending_streamed_paths:
                 continue
             if pending_streamed_paths:
@@ -614,6 +669,7 @@ def _upload_validated_dataset(
                 relative_path: str,
                 *,
                 signed_items: dict[str, dict[str, Any]] = upload_items,
+                routes: dict[str, UploadTransportRoute] = upload_routes,
             ) -> tuple[str, dict[str, Any]]:
                 signed = signed_items[relative_path]
                 upload_url = str(signed["upload_url"])
@@ -626,7 +682,7 @@ def _upload_validated_dataset(
                     _put_file_with_retries,
                     file_count=1,
                     byte_count=source_identities[relative_path]["size_bytes"],
-                    upload_url=upload_url,
+                    route=routes[relative_path],
                     path=source_file,
                     expected_identity=source_identities[relative_path],
                     headers=headers,
