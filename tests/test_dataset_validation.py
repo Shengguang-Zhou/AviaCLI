@@ -502,6 +502,86 @@ def test_verify_coco_resolves_standard_split_directory_file_names(tmp_path: Path
     assert result["status"] == "ok"
 
 
+def test_verify_coco_does_not_resolve_images_from_hidden_client_state(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    hidden_image = tmp_path / "images" / ".avia" / "sample.png"
+    hidden_image.parent.mkdir(parents=True)
+    (tmp_path / "images" / "sample.png").replace(hidden_image)
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["images"][0]["file_name"] = "images/.avia/sample.png"
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == "invalid_image" for item in result["errors"])
+
+
+@pytest.mark.parametrize(
+    ("task_key", "field", "value", "error_code"),
+    [
+        ("detect", "bbox", [True, "2", 5, 4], "invalid_coco_bbox"),
+        (
+            "segment",
+            "segmentation",
+            [[1, "2", 6, 2, 6, 6, 1, 6]],
+            "invalid_coco_segmentation",
+        ),
+        ("pose", "keypoints", [3, "4", 2], "invalid_coco_keypoints"),
+    ],
+)
+def test_verify_coco_requires_json_numbers_without_bool_or_string_coercion(
+    tmp_path: Path,
+    task_key: str,
+    field: str,
+    value: object,
+    error_code: str,
+) -> None:
+    _write_coco_dataset(tmp_path, task_key=task_key)
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0][field] = value
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key=task_key)
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == error_code for item in result["errors"])
+
+
+@pytest.mark.parametrize(
+    ("task_key", "field", "value", "error_code"),
+    [
+        ("detect", "bbox", [10**400, 2, 5, 4], "invalid_coco_bbox"),
+        (
+            "segment",
+            "segmentation",
+            [[1, 2, 10**400, 2, 6, 6, 1, 6]],
+            "invalid_coco_segmentation",
+        ),
+        ("pose", "keypoints", [10**400, 4, 2], "invalid_coco_keypoints"),
+    ],
+)
+def test_verify_coco_rejects_integers_that_overflow_float_without_traceback(
+    tmp_path: Path,
+    task_key: str,
+    field: str,
+    value: object,
+    error_code: str,
+) -> None:
+    _write_coco_dataset(tmp_path, task_key=task_key)
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0][field] = value
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key=task_key)
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == error_code for item in result["errors"])
+
+
 def test_verify_coco_rejects_truncated_uncompressed_rle(tmp_path: Path) -> None:
     _write_coco_dataset(tmp_path, task_key="segment")
     annotation_path = tmp_path / "annotations" / "instances.json"
@@ -638,6 +718,27 @@ def test_verify_imagenet_requires_consistent_class_directories(tmp_path: Path) -
     assert result["classes"] == ["aircraft"]
 
 
+def test_verify_imagenet_does_not_count_images_from_hidden_client_state(tmp_path: Path) -> None:
+    _write_image(tmp_path / "train" / "aircraft" / ".avia" / "only.png")
+    _write_image(tmp_path / "val" / "aircraft" / ".avia" / "only.png")
+
+    result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
+
+    assert result["status"] == "failed"
+    assert [item["code"] for item in result["errors"]].count("empty_imagenet_class") == 2
+
+
+def test_verify_imagenet_ignores_hidden_client_state_role_directories(tmp_path: Path) -> None:
+    _write_imagenet_dataset(tmp_path)
+    _write_image(tmp_path / "train" / ".avia" / "hidden.png")
+    _write_image(tmp_path / "val" / ".avia" / "hidden.png")
+
+    result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
+
+    assert result["status"] == "ok"
+    assert result["classes"] == ["aircraft"]
+
+
 def test_verify_imagenet_rejects_unknown_validation_class(tmp_path: Path) -> None:
     _write_imagenet_dataset(tmp_path)
     _write_image(tmp_path / "val" / "unknown" / "c.png")
@@ -661,6 +762,16 @@ def test_verify_anomalib_accepts_complete_mvtec_structure(tmp_path: Path) -> Non
 
     assert result["status"] == "ok"
     assert result["warning_count"] == 0
+
+
+def test_verify_anomalib_ignores_hidden_client_state_defect_directory(tmp_path: Path) -> None:
+    _write_anomalib_dataset(tmp_path)
+    _write_image(tmp_path / "test" / ".avia" / "hidden.png")
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "ok"
+    assert result["classes"] == ["good", "broken"]
 
 
 def test_verify_anomalib_accepts_explicit_provenance_documents(tmp_path: Path) -> None:

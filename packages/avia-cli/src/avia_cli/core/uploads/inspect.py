@@ -10,7 +10,10 @@ from avia_cli.core.uploads.api import _project_path, _request_json_with_retries
 from avia_cli.core.uploads.contracts import require_format_task
 from avia_cli.core.uploads.manifest import _is_image_path, scan_source_manifest
 from avia_cli.core.atomic_file import read_regular_file
-from avia_cli.core.uploads.response_contracts import IMPORT_STATUSES
+from avia_cli.core.uploads.response_contracts import (
+    IMPORT_STATUSES,
+    parse_version_ref_identity,
+)
 from avia_cli.core.uploads.state import _safe_state_segment, _validate_state
 from avia_cli.core.uploads.validation import validate_dataset
 
@@ -252,18 +255,7 @@ def _validate_server_import(item: dict[str, Any]) -> None:
     dataset_validation = item.get("dataset_validation")
     if dataset_validation is not None and not isinstance(dataset_validation, dict):
         raise RuntimeError("ingestion-jobs entry dataset_validation must be null or an object")
-    dataset_version_id = item.get("dataset_version_id")
-    if dataset_version_id is not None and (
-        not isinstance(dataset_version_id, str)
-        or not dataset_version_id
-        or dataset_version_id != dataset_version_id.strip()
-    ):
-        raise RuntimeError(
-            "ingestion-jobs entry dataset_version_id must be null or a canonical string"
-        )
-    version_ref = item.get("version_ref")
-    if version_ref is not None and not isinstance(version_ref, dict):
-        raise RuntimeError("ingestion-jobs entry version_ref must be null or an object")
+    parse_version_ref_identity(item, label="ingestion-jobs entry")
     for key in ("created_at", "updated_at"):
         value = item.get(key)
         if value is not None and (

@@ -9,6 +9,8 @@ pipx install avia-cli
 avia --help
 ```
 
+AviaCLI supports Python 3.10, 3.11, and 3.12.
+
 One-off run:
 
 ```bash
@@ -148,4 +150,5 @@ separate SDK package before that API is stable.
 Internal PR/manual CI uses Woodpecker's native authenticated
 `woodpeckerci/plugin-git:2.8.0` clone with LFS retrieval disabled. It shares
 `/mnt/data/avia/cache/uv` with the AVR repositories and uses same-device hardlinks; custom checkout
-scripts, per-repository uv caches, and copy mode are not part of the CI contract.
+scripts, per-repository uv caches, and copy mode are not part of the CI contract. The root project
+pins uv 0.8.3; quality runs on Python 3.10, 3.11, and 3.12 before one Python 3.12 package build.

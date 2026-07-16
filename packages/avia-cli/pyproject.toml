@@ -7,7 +7,7 @@ name = "avia-cli"
 version = "0.1.0"
 description = "Command line client for Avia dataset upload and browser authentication"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 authors = [
   { name = "Eurekai" },
 ]

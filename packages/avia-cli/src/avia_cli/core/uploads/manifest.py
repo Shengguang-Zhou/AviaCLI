@@ -30,6 +30,10 @@ def _is_image_path(path: str) -> bool:
     }
 
 
+def is_client_state_path(relative_path: Path) -> bool:
+    return ".avia" in relative_path.parts
+
+
 def _image_size_file(path: Path) -> tuple[int, int]:
     try:
         from PIL import Image
@@ -114,7 +118,7 @@ def scan_source_manifest(
             )
         if not path.is_file():
             continue
-        if ".avia" in relative.parts:
+        if is_client_state_path(relative):
             continue
         paths.append(path)
 

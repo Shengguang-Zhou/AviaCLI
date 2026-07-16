@@ -122,6 +122,9 @@ def test_dataset_commands_reject_historical_truncation_options(command: str, opt
         ["dataset", "upload", "--project", "p", "--upload-retries", "0"],
         ["dataset", "upload", "--project", "p", "--upload-connect-timeout", "0"],
         ["dataset", "upload", "--project", "p", "--poll-interval", "0"],
+        ["auth", "login", "--poll-interval", "nan"],
+        ["dataset", "upload", "--project", "p", "--progress-interval", "nan"],
+        ["dataset", "upload", "--project", "p", "--upload-read-timeout", "inf"],
     ],
 )
 def test_numeric_cli_contracts_reject_invalid_values_before_execution(argv: list[str]) -> None:
@@ -407,7 +410,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "dispatch_mode": "celery",
                     "worker_task_id": "task_123",
                     "dataset_version_id": "dv_123",
-                    "version_ref": {"id": "dv_123"},
+                    "version_ref": {"dataset_version_id": "dv_123"},
                 },
                 "files": {
                     "classes.txt": {
@@ -446,7 +449,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "error": {},
                     "dataset_validation": None,
                     "dataset_version_id": "dv_123",
-                    "version_ref": {"id": "dv_123"},
+                    "version_ref": {"dataset_version_id": "dv_123"},
                     "created_at": "2026-07-15T10:00:00+00:00",
                     "updated_at": "2026-07-15T10:01:00+00:00",
                 }
@@ -494,6 +497,9 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
         lambda item: item.pop("job_type"),
         lambda item: item.update({"legacy_source": "archive"}),
         lambda item: item.update({"progress": None}),
+        lambda item: item.update({"version_ref": {"id": "dv_123"}}),
+        lambda item: item.update({"version_ref": {"dataset_version_id": ""}}),
+        lambda item: item.update({"version_ref": {"dataset_version_id": "dv_other"}}),
     ],
 )
 def test_cleanup_plan_rejects_noncanonical_ingestion_job_entries(
@@ -508,7 +514,7 @@ def test_cleanup_plan_rejects_noncanonical_ingestion_job_entries(
         "error": {},
         "dataset_validation": None,
         "dataset_version_id": "dv_123",
-        "version_ref": {"id": "dv_123"},
+        "version_ref": {"dataset_version_id": "dv_123"},
         "created_at": "2026-07-15T10:00:00+00:00",
         "updated_at": "2026-07-15T10:01:00+00:00",
     }

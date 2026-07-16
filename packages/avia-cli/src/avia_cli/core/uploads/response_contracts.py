@@ -238,6 +238,7 @@ def decode_batch_complete_response(
         raise RuntimeError("batch-complete image_ids must be unique non-empty strings")
     for key in ("post_upload_pipeline", "embedding_incremental_pipeline"):
         _require_object(payload, key, label="batch-complete response")
+    parse_version_ref_identity(payload, label="batch-complete response")
     return payload
 
 
@@ -266,10 +267,9 @@ def decode_complete_import_response(
         raise RuntimeError("complete-import status must be queued")
     _require_object(payload, "dataset_manifest_ref", label="complete-import response")
     _require_object(payload, "read_lease", label="complete-import response")
-    _require_object(payload, "version_ref", label="complete-import response")
+    parse_version_ref_identity(payload, label="complete-import response")
     if payload.get("reason") != "queued":
         raise RuntimeError("complete-import reason must be queued")
-    _require_nonempty_string(payload, "dataset_version_id", label="complete-import response")
     _require_nonempty_string(payload, "dispatch_mode", label="complete-import response")
     _require_nonempty_string(payload, "worker_task_id", label="complete-import response")
     return payload
@@ -300,7 +300,34 @@ def decode_import_job_response(
     for key in ("progress", "error"):
         if not isinstance(payload.get(key), dict):
             raise RuntimeError(f"import-job response {key} must be an object")
+    dataset_validation = payload.get("dataset_validation")
+    if dataset_validation is not None and not isinstance(dataset_validation, dict):
+        raise RuntimeError("import-job response dataset_validation must be null or an object")
+    parse_version_ref_identity(payload, label="import-job response")
     return payload
+
+
+def parse_version_ref_identity(
+    payload: dict[str, Any],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    dataset_version_id = _require_nonempty_string(payload, "dataset_version_id", label=label)
+    version_ref = _require_object(payload, "version_ref", label=label)
+    if "id" in version_ref:
+        raise RuntimeError(
+            f"{label} version_ref dataset_version_id is the sole identity field; id is invalid"
+        )
+    referenced_version_id = _require_nonempty_string(
+        version_ref,
+        "dataset_version_id",
+        label=f"{label} version_ref",
+    )
+    if referenced_version_id != dataset_version_id:
+        raise RuntimeError(
+            f"{label} version_ref dataset_version_id does not match dataset_version_id"
+        )
+    return version_ref
 
 
 def _unique_requested_files(

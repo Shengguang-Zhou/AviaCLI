@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 from pathlib import Path
 
@@ -79,6 +80,9 @@ def test_internal_pr_ci_uses_native_clone_shared_cache_and_runs_full_release_gat
     assert "event: [pull_request, manual]" in workflow
     assert "backend: local" in workflow
     assert "image: woodpeckerci/plugin-git:2.8.0" in workflow
+    assert "http_proxy: http://127.0.0.1:7897" in workflow
+    assert "https_proxy: http://127.0.0.1:7897" in workflow
+    assert "no_proxy: 127.0.0.1,localhost,192.168.1.9" in workflow
     assert "lfs: false" in workflow
     assert "skip_clone" not in workflow
     assert "checkout_cached_source.sh" not in workflow
@@ -86,11 +90,49 @@ def test_internal_pr_ci_uses_native_clone_shared_cache_and_runs_full_release_gat
     assert "UV_LINK_MODE: hardlink" in workflow
     assert "UV_LINK_MODE: copy" not in workflow
     assert "/mnt/data/avia/cache/uv-avia-cli" not in workflow
-    assert "uv sync --frozen --all-packages --group dev" in workflow
-    assert "uv run pytest -W error" in workflow
-    assert "uv run ruff check packages tests" in workflow
-    assert "uv run ruff format --check packages tests" in workflow
+    assert "uv sync --python ${PYTHON_VERSION} --frozen --all-packages --group dev" in workflow
+    assert "uv run --python ${PYTHON_VERSION} pytest -W error" in workflow
+    assert "uv run --python ${PYTHON_VERSION} ruff check packages tests" in workflow
+    assert "uv run --python ${PYTHON_VERSION} ruff format --check packages tests" in workflow
     assert "uv build --package avia-cli" in workflow
+
+
+def test_internal_ci_runs_quality_on_every_supported_python_and_builds_once() -> None:
+    workflow = (ROOT / ".woodpecker" / "ci.yml").read_text(encoding="utf-8")
+
+    assert 'PYTHON_VERSION: ["3.10", "3.11", "3.12"]' in workflow
+    assert "uv sync --python ${PYTHON_VERSION}" in workflow
+    assert "uv run --python ${PYTHON_VERSION} pytest -W error" in workflow
+    assert workflow.count("uv build --package avia-cli") == 1
+    assert 'PYTHON_VERSION: "3.12"' in workflow
+    assert (ROOT / "pyproject.toml").read_text(encoding="utf-8").count(
+        'required-version = "==0.8.3"'
+    ) == 1
+    assert not (ROOT / "uv.toml").exists()
+
+
+def test_release_ci_tests_every_supported_python_then_builds_and_publishes_once() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+
+    assert "python-version: [\"3.10\", \"3.11\", \"3.12\"]" in workflow
+    assert "python-version: ${{ matrix.python-version }}" in workflow
+    assert workflow.count('version: "0.8.3"') == 2
+    assert workflow.count("uv build --package avia-cli") == 1
+    assert "needs: quality" in workflow
+    assert workflow.count("needs: build") == 2
+
+
+def test_woodpecker_shell_locals_are_escaped_until_shell_execution() -> None:
+    workflow = (ROOT / ".woodpecker" / "ci.yml").read_text(encoding="utf-8")
+
+    shell_locals = set(re.findall(r"^\s+([A-Za-z_][A-Za-z0-9_]*)=", workflow, re.MULTILINE))
+    unescaped_locals = [
+        name
+        for name in sorted(shell_locals)
+        if re.search(rf"(?<!\$)\$\{{{re.escape(name)}\}}", workflow)
+    ]
+    assert unescaped_locals == []
+    assert "build_dir" in shell_locals
 
 
 def test_tracked_sources_are_not_git_lfs_pointer_files() -> None:

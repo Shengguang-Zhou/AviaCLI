@@ -22,6 +22,8 @@ pipx install avia-cli
 avia --help
 ```
 
+AviaCLI supports Python 3.10, 3.11, and 3.12.
+
 For one-off use:
 
 ```bash
@@ -38,9 +40,12 @@ uv run ruff format --check packages tests
 uv build --package avia-cli
 ```
 
+Development and CI use the root-enforced uv 0.8.3 toolchain on Python 3.10, 3.11, and 3.12.
+
 Pull requests and manual internal runs use `.woodpecker/ci.yml` on the local backend with the
-platform cached checkout. The workflow performs a frozen dependency sync, the complete warning-
-strict test suite, Ruff lint/format checks, and builds both the sdist and wheel.
+native authenticated clone. The workflow uses uv 0.8.3 to run frozen dependency sync, the complete
+warning-strict test suite, and Ruff lint/format checks on Python 3.10, 3.11, and 3.12, then builds
+the sdist and wheel once on Python 3.12.
 
 ## Boundary
 

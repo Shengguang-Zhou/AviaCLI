@@ -9,13 +9,13 @@ import cv2
 import numpy as np
 from pycocotools import mask as mask_utils
 
-from avia_cli.core.uploads.manifest import _is_image_path
+from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
 from avia_cli.core.uploads.validation_common import (
     error,
-    finite_numbers,
     image_size,
     is_cache_path,
     is_document_path,
+    json_finite_numbers,
 )
 
 CocoImageIndex: TypeAlias = tuple[dict[str, Path], dict[str, list[tuple[str, Path]]]]
@@ -65,7 +65,7 @@ def validate_coco(*, source_root: Path, task_key: str) -> tuple[list[str], list[
         )
     allowed_json = {path.relative_to(source_root).as_posix() for path in annotation_paths}
     for path in sorted(source_root.rglob("*")):
-        if not path.is_file() or ".avia" in path.relative_to(source_root).parts:
+        if not path.is_file() or is_client_state_path(path.relative_to(source_root)):
             continue
         relative = path.relative_to(source_root).as_posix()
         allowed = relative in all_images or relative in allowed_json or is_document_path(relative)
@@ -376,7 +376,11 @@ def _build_image_index(source_root: Path) -> CocoImageIndex:
     by_relative: dict[str, Path] = {}
     by_name: dict[str, list[tuple[str, Path]]] = {}
     for path in sorted(source_root.rglob("*")):
-        if not path.is_file() or not _is_image_path(path.name):
+        if (
+            not path.is_file()
+            or is_client_state_path(path.relative_to(source_root))
+            or not _is_image_path(path.name)
+        ):
             continue
         relative = path.relative_to(source_root).as_posix()
         by_relative[relative] = path
@@ -408,7 +412,7 @@ def _validate_bbox(
     location: dict[str, object],
     errors: list[dict[str, Any]],
 ) -> None:
-    numbers = finite_numbers(value if isinstance(value, list) else [])
+    numbers = json_finite_numbers(value)
     if numbers is None or len(numbers) != 4:
         errors.append(
             error("invalid_coco_bbox", "bbox must contain four finite numbers", **location)
@@ -459,7 +463,7 @@ def _decode_segmentation_mask(value: object, *, width: int, height: int) -> np.n
             polygons = list(value)
         canonical_polygons: list[list[float]] = []
         for polygon in polygons:
-            numbers = finite_numbers(polygon if isinstance(polygon, list) else [])
+            numbers = json_finite_numbers(polygon)
             if numbers is None or len(numbers) < 6 or len(numbers) % 2:
                 raise ValueError("COCO polygon segmentation is invalid")
             points = list(zip(numbers[::2], numbers[1::2], strict=True))
@@ -525,9 +529,7 @@ def _validate_keypoints(
     errors: list[dict[str, Any]],
 ) -> None:
     names = list(category.get("keypoints") or [])
-    numbers = finite_numbers(
-        annotation.get("keypoints") if isinstance(annotation.get("keypoints"), list) else []
-    )
+    numbers = json_finite_numbers(annotation.get("keypoints"))
     if numbers is None or len(numbers) != len(names) * 3:
         errors.append(
             error("invalid_coco_keypoints", "keypoints must match category metadata", **location)

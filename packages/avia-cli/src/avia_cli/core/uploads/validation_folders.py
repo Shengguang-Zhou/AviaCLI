@@ -5,8 +5,9 @@ from typing import Any
 
 from PIL import Image
 
-from avia_cli.core.uploads.manifest import _is_image_path
+from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
 from avia_cli.core.uploads.validation_common import (
+    dataset_role_directories,
     error,
     image_files,
     image_size,
@@ -18,11 +19,10 @@ from avia_cli.core.uploads.validation_common import (
 def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     train_root = source_root / "train"
-    classes = (
-        sorted(path.name for path in train_root.iterdir() if path.is_dir())
-        if train_root.is_dir()
-        else []
-    )
+    classes = [
+        path.name
+        for path in dataset_role_directories(source_root=source_root, role_root=train_root)
+    ]
     if not classes:
         return [], [
             error(
@@ -34,7 +34,13 @@ def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]
         split_root = source_root / split
         if not split_root.exists():
             continue
-        actual = {path.name for path in split_root.iterdir() if path.is_dir()}
+        actual = {
+            path.name
+            for path in dataset_role_directories(
+                source_root=source_root,
+                role_root=split_root,
+            )
+        }
         if actual != expected:
             errors.append(
                 error(
@@ -46,7 +52,7 @@ def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]
                 )
             )
         for class_name in sorted(actual):
-            paths = image_files(split_root / class_name)
+            paths = image_files(source_root=source_root, root=split_root / class_name)
             if not paths:
                 errors.append(
                     error(
@@ -77,9 +83,12 @@ def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]
 
 def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
-    train_good = image_files(source_root / "train" / "good")
-    test_good = image_files(source_root / "test" / "good")
-    validation_good = image_files(source_root / "validation" / "good")
+    train_good = image_files(source_root=source_root, root=source_root / "train" / "good")
+    test_good = image_files(source_root=source_root, root=source_root / "test" / "good")
+    validation_good = image_files(
+        source_root=source_root,
+        root=source_root / "validation" / "good",
+    )
     if not train_good:
         errors.append(
             error("missing_anomalib_train_good", "Anomalib train/good images are required")
@@ -92,13 +101,15 @@ def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]
             )
         )
     test_root = source_root / "test"
-    defect_dirs = (
-        sorted(path for path in test_root.iterdir() if path.is_dir() and path.name != "good")
-        if test_root.is_dir()
-        else []
-    )
+    defect_dirs = [
+        path
+        for path in dataset_role_directories(source_root=source_root, role_root=test_root)
+        if path.name != "good"
+    ]
     bad_samples = [
-        (defect.name, sample) for defect in defect_dirs for sample in image_files(defect)
+        (defect.name, sample)
+        for defect in defect_dirs
+        for sample in image_files(source_root=source_root, root=defect)
     ]
     if not bad_samples:
         errors.append(
@@ -117,7 +128,10 @@ def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]
         expected_stem = sample.stem if defect == "bad" else f"{sample.stem}_mask"
         candidates = sorted(
             path
-            for path in image_files(source_root / "ground_truth" / defect)
+            for path in image_files(
+                source_root=source_root,
+                root=source_root / "ground_truth" / defect,
+            )
             if path.stem == expected_stem
         )
         if len(candidates) != 1:
@@ -146,7 +160,10 @@ def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]
                 )
             )
         _validate_anomaly_mask(source_root=source_root, mask=mask, errors=errors)
-    actual_masks = {path.resolve() for path in image_files(source_root / "ground_truth")}
+    actual_masks = {
+        path.resolve()
+        for path in image_files(source_root=source_root, root=source_root / "ground_truth")
+    }
     for orphan in sorted(actual_masks - expected_masks):
         errors.append(
             error(
@@ -217,7 +234,7 @@ def _validate_folder_roles(
     errors: list[dict[str, Any]],
 ) -> None:
     for path in sorted(source_root.rglob("*")):
-        if not path.is_file() or ".avia" in path.relative_to(source_root).parts:
+        if not path.is_file() or is_client_state_path(path.relative_to(source_root)):
             continue
         relative = path.relative_to(source_root).as_posix()
         if (not allowed(relative) and not is_document_path(relative)) or is_cache_path(relative):

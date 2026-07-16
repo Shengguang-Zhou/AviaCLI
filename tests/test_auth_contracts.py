@@ -337,6 +337,90 @@ def test_request_retry_layer_does_not_refresh_twice_after_repeated_401(
     assert token.refresh_count == 1
 
 
+def test_real_http_403_token_expired_does_not_refresh_or_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = AuthTokenManager(
+        api="https://avia.example/api/v1",
+        token="valid-but-forbidden",
+        refresh_token="refresh",
+    )
+    requests_seen: list[request.Request] = []
+
+    def forbidden(req: request.Request, **_kwargs: object) -> _Response:
+        requests_seen.append(req)
+        raise urlerror.HTTPError(
+            req.full_url,
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(b'{"error":{"code":"token_expired"}}'),
+        )
+
+    monkeypatch.setattr(
+        manager,
+        "_refresh_with_refresh_token",
+        lambda: pytest.fail("403 must not refresh credentials"),
+    )
+    monkeypatch.setattr("avia_cli.core.http.no_redirect.open_no_redirect", forbidden)
+
+    with pytest.raises(_AviaHTTPError, match="HTTP 403"):
+        _request_json_with_retries(
+            method="GET",
+            url="https://avia.example/api/v1/probe",
+            token=manager,
+            retries=3,
+        )
+
+    assert len(requests_seen) == 1
+    assert manager.refresh_count == 0
+
+
+def test_real_http_401_refreshes_once_then_replays_with_new_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = AuthTokenManager(
+        api="https://avia.example/api/v1",
+        token="expired",
+        refresh_token="refresh",
+    )
+    authorizations: list[str] = []
+
+    def unauthorized_then_ok(req: request.Request, **_kwargs: object) -> _Response:
+        authorizations.append(str(req.headers.get("Authorization") or ""))
+        if len(authorizations) == 1:
+            raise urlerror.HTTPError(
+                req.full_url,
+                401,
+                "Unauthorized",
+                {},
+                io.BytesIO(b'{"error":{"code":"token_expired"}}'),
+            )
+        return _Response(b'{"status":"ok"}')
+
+    monkeypatch.setattr(
+        manager,
+        "_refresh_with_refresh_token",
+        lambda: {"access_token": "fresh", "refresh_token": "next-refresh"},
+    )
+    monkeypatch.setattr(
+        "avia_cli.core.http.no_redirect.open_no_redirect",
+        unauthorized_then_ok,
+    )
+
+    result = _request_json_with_retries(
+        method="GET",
+        url="https://avia.example/api/v1/probe",
+        token=manager,
+        retries=3,
+    )
+
+    assert result == {"status": "ok"}
+    assert authorizations == ["Bearer expired", "Bearer fresh"]
+    assert manager.refresh_count == 1
+    assert manager.refresh_token == "next-refresh"
+
+
 def test_403_never_refreshes_or_switches_credentials() -> None:
     manager = AuthTokenManager(
         api="https://avia.example/api/v1",

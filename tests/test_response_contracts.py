@@ -11,6 +11,7 @@ from avia_cli.core.api_base import canonical_api_base
 from avia_cli.core.uploads.dataset import create_source_import
 from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.response_contracts import (
+    IMPORT_STATUSES,
     decode_batch_complete_response,
     decode_batch_upload_urls_response,
     decode_complete_import_response,
@@ -254,7 +255,7 @@ def test_batch_complete_decoder_requires_proof_of_exact_accepted_batch() -> None
         "uploaded_files": 1,
         "image_ids": ["img_123"],
         "dataset_version_id": "dv_123",
-        "version_ref": {"id": "dv_123"},
+        "version_ref": {"dataset_version_id": "dv_123"},
         "post_upload_pipeline": {"status": "queued"},
         "embedding_incremental_pipeline": {"status": "skipped"},
     }
@@ -274,6 +275,13 @@ def test_batch_complete_decoder_requires_proof_of_exact_accepted_batch() -> None
             import_id=IMPORT_ID,
             requested_paths=["images/train/a.png"],
         )
+    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+        decode_batch_complete_response(
+            {**payload, "version_ref": {"id": "dv_123"}},
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            requested_paths=["images/train/a.png"],
+        )
 
 
 def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
@@ -289,7 +297,7 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "dispatch_mode": "celery",
         "worker_task_id": "task_123",
         "dataset_version_id": "dv_123",
-        "version_ref": {"id": "dv_123"},
+        "version_ref": {"dataset_version_id": "dv_123"},
     }
     assert decode_complete_import_response(complete, project_id=PROJECT_ID, import_id=IMPORT_ID)
     job = {
@@ -301,7 +309,7 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "error": {},
         "dataset_validation": None,
         "dataset_version_id": "dv_123",
-        "version_ref": {"id": "dv_123"},
+        "version_ref": {"dataset_version_id": "dv_123"},
     }
     assert decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID)
     for alias in ("success", "completed", "done", "error", "cancelled"):
@@ -309,6 +317,99 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
             decode_import_job_response(
                 {**job, "status": alias}, project_id=PROJECT_ID, import_id=IMPORT_ID
             )
+
+
+@pytest.mark.parametrize(
+    "version_ref",
+    [
+        {"id": "dv_123"},
+        {"dataset_version_id": ""},
+        {"dataset_version_id": " dv_123"},
+        {"dataset_version_id": "dv_other"},
+        {"dataset_version_id": "dv_123", "id": "dv_123"},
+    ],
+)
+def test_complete_import_rejects_noncanonical_version_reference_identity(
+    version_ref: dict[str, object],
+) -> None:
+    ref, lease = _ref_payload()
+    payload = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": "queued",
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+        "reason": "queued",
+        "dispatch_mode": "celery",
+        "worker_task_id": "task_123",
+        "dataset_version_id": "dv_123",
+        "version_ref": version_ref,
+    }
+
+    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+        decode_complete_import_response(payload, project_id=PROJECT_ID, import_id=IMPORT_ID)
+
+
+@pytest.mark.parametrize("status", sorted(IMPORT_STATUSES))
+def test_every_import_job_status_rejects_historical_version_reference(status: str) -> None:
+    job = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": status,
+        "progress": {"phase": status},
+        "error": {},
+        "dataset_validation": None,
+        "dataset_version_id": "dv_123",
+        "version_ref": {"id": "dv_123"},
+    }
+
+    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+        decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dataset_version_id", ""),
+        ("version_ref", None),
+        ("dataset_validation", "not-an-object"),
+    ],
+)
+def test_succeeded_import_job_requires_usable_result_references(field: str, value: object) -> None:
+    job = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": "succeeded",
+        "progress": {"phase": "succeeded"},
+        "error": {},
+        "dataset_validation": None,
+        "dataset_version_id": "dv_123",
+        "version_ref": {"dataset_version_id": "dv_123"},
+    }
+    job[field] = value
+
+    with pytest.raises(RuntimeError, match=field):
+        decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID)
+
+
+def test_succeeded_import_job_rejects_conflicting_version_reference_identity() -> None:
+    job = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": "succeeded",
+        "progress": {"phase": "succeeded"},
+        "error": {},
+        "dataset_validation": None,
+        "dataset_version_id": "dv_123",
+        "version_ref": {"dataset_version_id": "dv_other"},
+    }
+
+    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+        decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID)
 
 
 def test_complete_decoder_accepts_the_shared_server_queued_contract() -> None:

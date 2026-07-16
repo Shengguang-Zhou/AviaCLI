@@ -154,17 +154,10 @@ def is_auth_error(exc: object) -> bool:
         numeric_status = 0
     if numeric_status == 401:
         return True
-    text = " ".join(
-        str(getattr(exc, name, "") or "") for name in ("detail", "reason", "stderr", "stdout")
-    ).lower()
-    return "token_expired" in text
-
-
-def result_is_auth_failure(result: dict[str, Any]) -> bool:
-    code = int(result.get("returncode") or 0)
-    if code not in {22, 401, 403}:
+    if numeric_status == 403:
         return False
-    return is_auth_error(type("_ProbeError", (), dict(result))())
+    text = " ".join(str(getattr(exc, name, "") or "") for name in ("detail", "reason")).lower()
+    return "token_expired" in text
 
 
 def refresh_after_auth_error(token: object, exc: object, *, label: str) -> bool:

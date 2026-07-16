@@ -18,6 +18,11 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   validation also compares decoded dimensions with manifest dimensions when present.
 - Anomalib masks use Pillow's non-deprecated `get_flattened_data()` API, so the package requires
   Pillow 12.1 or newer; dependency metadata must not claim support for an older Pillow ABI.
+- The published package supports Python 3.10 through 3.12. The workspace, wheel metadata, NumPy
+  1.x dependency, lock file, classifiers, internal CI, and release workflow must enforce that one
+  range. Quality runs on all three interpreters; release artifacts are built and published once.
+- uv 0.8.3 is the sole dependency resolver/cache ABI for local, Woodpecker, and release runs.
+  Pin it in root `pyproject.toml`; do not add `uv.toml` or allow CI toolchain drift.
 - YOLO multilabel classification requires one label file per image. An existing empty label file
   is an explicit negative sample; a missing label file is a dataset error.
 - YOLO segment validity follows the AviaTraining/Ultralytics consumer contract. Official
@@ -72,7 +77,8 @@ uv build --package avia-cli
 ```
 
 The internal Woodpecker PR/manual workflow is the quality-gate source of truth. It uses the native
-authenticated clone contract with `woodpeckerci/plugin-git:2.8.0` and `lfs: false`; never restore
+authenticated clone contract with `woodpeckerci/plugin-git:2.8.0` and `lfs: false`; clone traffic
+uses the target host's loopback-only GitHub egress proxy at `127.0.0.1:7897`. Never restore
 `skip_clone` or a custom checkout script. Tracked sources must not be Git LFS pointer files. All
 repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this same-device workspace must use
 `UV_LINK_MODE=hardlink`, never copy mode. GitHub Actions is release-only for tags/manual trusted

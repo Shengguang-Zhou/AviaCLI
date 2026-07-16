@@ -8,7 +8,7 @@ from typing import Any
 
 from PIL import Image
 
-from avia_cli.core.uploads.manifest import _is_image_path
+from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
 
 _DOCUMENT_NAMES = {
     "LICENSE",
@@ -37,6 +37,18 @@ def finite_numbers(values: list[object]) -> list[float] | None:
     return numbers if all(math.isfinite(value) for value in numbers) else None
 
 
+def json_finite_numbers(value: object) -> list[float] | None:
+    if not isinstance(value, list) or any(
+        isinstance(item, bool) or not isinstance(item, (int, float)) for item in value
+    ):
+        return None
+    try:
+        numbers = [float(item) for item in value]
+    except OverflowError:
+        return None
+    return numbers if all(math.isfinite(item) for item in numbers) else None
+
+
 def image_size(path: Path) -> tuple[int, int]:
     try:
         with Image.open(path) as image:
@@ -51,10 +63,26 @@ def image_size(path: Path) -> tuple[int, int]:
     return width, height
 
 
-def image_files(root: Path) -> list[Path]:
+def dataset_role_directories(*, source_root: Path, role_root: Path) -> list[Path]:
+    if not role_root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in role_root.iterdir()
+        if path.is_dir() and not is_client_state_path(path.relative_to(source_root))
+    )
+
+
+def image_files(*, source_root: Path, root: Path) -> list[Path]:
     if not root.is_dir():
         return []
-    return sorted(path for path in root.rglob("*") if path.is_file() and _is_image_path(path.name))
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.is_file()
+        and not is_client_state_path(path.relative_to(source_root))
+        and _is_image_path(path.name)
+    )
 
 
 def polygon_area(points: list[tuple[float, float]]) -> float:

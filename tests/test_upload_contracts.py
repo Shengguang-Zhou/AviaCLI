@@ -94,6 +94,38 @@ def test_resume_state_identity_includes_task_key(tmp_path: Path) -> None:
     assert state["task_key"] == "pose"
 
 
+def test_resume_rejects_completed_state_with_historical_version_reference(
+    tmp_path: Path,
+) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["phase"] = "completed"
+    state["complete_response"] = {
+        "workspace_id": "ws_123",
+        "project_id": "proj_123456789abc",
+        "import_id": "imp_123",
+        "status": "queued",
+        "dataset_manifest_ref": {"id": "dm_123"},
+        "read_lease": {"id": "lease_123"},
+        "reason": "queued",
+        "dispatch_mode": "celery",
+        "worker_task_id": "task_123",
+        "dataset_version_id": "dv_123",
+        "version_ref": {"id": "dv_123"},
+    }
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="version_ref dataset_version_id"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
 def test_resume_scans_past_newer_near_match_to_find_unique_exact_task(
     tmp_path: Path,
 ) -> None:
