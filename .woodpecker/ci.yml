@@ -7,10 +7,6 @@ labels:
 clone:
   git:
     image: woodpeckerci/plugin-git:2.9.2
-    environment:
-      http_proxy: http://127.0.0.1:7897
-      https_proxy: http://127.0.0.1:7897
-      no_proxy: 127.0.0.1,localhost,192.168.1.9
     settings:
       lfs: false
 

@@ -79,8 +79,10 @@ warning rather than misclassified as an upload-blocking error.
 
 Woodpecker uses the pinned native authenticated `woodpeckerci/plugin-git:2.9.2` clone with
 `lfs: false`, the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
-`UV_PYTHON_DOWNLOADS=never`. The workflow has no custom checkout path and the source-boundary gate
-rejects tracked Git LFS pointer files.
+`UV_PYTHON_DOWNLOADS=never`. Its clone container has no explicit environment so Woodpecker can
+classify the trusted plugin and inject netrc; the server-owned GitHub URL proxy is carried through
+`GIT_CONFIG_*`. The workflow has no custom checkout path and the source-boundary gate rejects
+tracked Git LFS pointer files.
 
 ## Release
 
