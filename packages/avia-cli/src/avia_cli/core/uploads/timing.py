@@ -6,6 +6,12 @@ import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from avia_cli.core.uploads.source_file import (
+    SourceFileChangedError,
+    SourceIdentity,
+    open_verified_source,
+)
+
 T = TypeVar("T")
 _MIB = 1024 * 1024
 
@@ -79,10 +85,7 @@ class UploadTimingRecorder:
 
     def summary(self) -> dict[str, Any]:
         with self._lock:
-            result = {
-                name: _summarize_event(event)
-                for name, event in sorted(self._events.items())
-            }
+            result = {name: _summarize_event(event) for name, event in sorted(self._events.items())}
             if self._first_accepted is not None:
                 result["first_512_accepted"] = dict(self._first_accepted)
             elif self._accepted_files > 0:
@@ -107,9 +110,7 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
         "byte_count": byte_count,
         "mib": round(byte_count / _MIB, 3),
         "throughput_mibps": (
-            round((byte_count / _MIB) / duration, 3)
-            if byte_count > 0 and duration > 0
-            else None
+            round((byte_count / _MIB) / duration, 3) if byte_count > 0 and duration > 0 else None
         ),
     }
 
@@ -118,37 +119,44 @@ def put_file_with_retries(
     *,
     put_file: Callable[..., None],
     is_retryable: Callable[[BaseException], bool],
-    upload_url: str,
+    route: Any,
     path: Any,
+    expected_identity: SourceIdentity | dict[str, object],
     headers: dict[str, object],
     retries: int,
     base_delay_sec: float,
     connect_timeout: float,
     read_timeout: float,
 ) -> None:
-    attempts = max(1, int(retries or 1))
-    delay = max(0.1, float(base_delay_sec or 0.1))
+    attempts = int(retries)
+    delay = float(base_delay_sec)
+    if attempts <= 0 or delay <= 0:
+        raise ValueError("upload retries and retry delay must be greater than zero")
     last_error: BaseException | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            put_file(
-                upload_url=upload_url,
-                path=path,
-                headers=headers,
-                connect_timeout=connect_timeout,
-                read_timeout=read_timeout,
-            )
-            return
-        except Exception as exc:
-            last_error = exc
-            if attempt >= attempts or not is_retryable(exc):
-                break
-            retry_number = attempt + 1
-            sleep_sec = min(30.0, delay * (2 ** (attempt - 1)))
-            print(
-                f"PUT failed transiently; retrying {retry_number}/{attempts} in {sleep_sec:.1f}s",
-                file=sys.stderr,
-            )
-            time.sleep(sleep_sec)
+    with open_verified_source(path, expected_identity) as source:
+        for attempt in range(1, attempts + 1):
+            try:
+                put_file(
+                    route=route,
+                    source=source,
+                    headers=headers,
+                    connect_timeout=connect_timeout,
+                    read_timeout=read_timeout,
+                )
+                return
+            except SourceFileChangedError:
+                raise
+            except Exception as exc:
+                source.assert_unchanged(context="source file changed during failed transfer")
+                last_error = exc
+                if attempt >= attempts or not is_retryable(exc):
+                    break
+                retry_number = attempt + 1
+                sleep_sec = min(30.0, delay * (2 ** (attempt - 1)))
+                print(
+                    f"PUT failed transiently; retrying {retry_number}/{attempts} in {sleep_sec:.1f}s",
+                    file=sys.stderr,
+                )
+                time.sleep(sleep_sec)
     assert last_error is not None
     raise last_error

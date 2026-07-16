@@ -1,1 +1,1 @@
-"""Dataset upload helpers for Avia SDK."""
+"""Dataset upload helpers for AviaCLI."""

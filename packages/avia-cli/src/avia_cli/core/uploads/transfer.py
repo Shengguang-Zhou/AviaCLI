@@ -1,193 +1,174 @@
 from __future__ import annotations
 
-import http.client
-import shutil
-import subprocess
-import time
-from pathlib import Path
-from typing import Any
+import re
+from dataclasses import dataclass
 from urllib import parse
+
+from avia_cli.core.errors import _UploadTransportError
+from avia_cli.core.uploads.source_file import VerifiedSourceFile
+
+_HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class UploadTransportRoute:
+    upload_url: str
+    proxy_items: tuple[tuple[str, str | None], ...]
+
+    def request_proxies(self) -> dict[str, str | None]:
+        return dict(self.proxy_items)
+
+
+def _resolved_upload_proxies(upload_url: str) -> dict[str, str | None]:
+    """Freeze the requests environment route for one validated upload URL."""
+
+    import requests
+
+    environment = requests.utils.get_environ_proxies(upload_url)
+    if requests.utils.select_proxy(upload_url, environment) is None:
+        return {"http": None, "https": None, "all": None}
+    return {str(key): str(value) for key, value in environment.items()}
+
+
+def resolve_upload_route(upload_url: str) -> UploadTransportRoute:
+    """Validate one signed URL and freeze the route shared by its probe and PUT."""
+
+    validate_upload_contract(upload_url=upload_url, headers={}, expected_length=0)
+    proxies = _resolved_upload_proxies(upload_url)
+    return UploadTransportRoute(
+        upload_url=upload_url,
+        proxy_items=tuple(sorted(proxies.items())),
+    )
+
+
+def _validated_upload_headers(
+    headers: dict[str, object],
+    *,
+    expected_length: int,
+) -> dict[str, str]:
+    clean: dict[str, str] = {}
+    seen: set[str] = set()
+    for raw_name, raw_value in dict(headers).items():
+        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+            raise RuntimeError("upload required_headers names and values must be strings")
+        name = raw_name
+        value = raw_value
+        if not _HEADER_NAME.fullmatch(name):
+            raise RuntimeError("upload required_headers contains an invalid name")
+        if value != value.strip() or any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise RuntimeError("upload required_headers contains an invalid value")
+        try:
+            value.encode("latin-1")
+        except UnicodeEncodeError as exc:
+            raise RuntimeError(
+                "upload required_headers value must be ISO-8859-1 encodable"
+            ) from exc
+        normalized = name.lower()
+        if normalized in seen:
+            raise RuntimeError(f"upload required_headers duplicates {name} case-insensitively")
+        seen.add(normalized)
+        if normalized == "host":
+            raise RuntimeError("upload required_headers must not override Host")
+        if normalized == "transfer-encoding":
+            raise RuntimeError("upload required_headers must not use Transfer-Encoding")
+        if normalized == "content-length":
+            if value != str(expected_length):
+                raise RuntimeError(
+                    "upload Content-Length does not match the verified source range: "
+                    f"expected={expected_length} supplied={value}"
+                )
+            continue
+        clean[name] = value
+    clean["Content-Length"] = str(expected_length)
+    return clean
+
+
+def validate_upload_contract(
+    *, upload_url: str, headers: dict[str, object], expected_length: int
+) -> parse.SplitResult:
+    try:
+        parsed = parse.urlsplit(upload_url)
+        _ = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("upload URL contract is malformed") from exc
+    if (
+        not upload_url.isascii()
+        or any(character.isspace() or ord(character) < 32 for character in upload_url)
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or bool(parsed.fragment)
+    ):
+        raise RuntimeError("upload URL contract must be an absolute credential-free http(s) URL")
+    _validated_upload_headers(headers, expected_length=expected_length)
+    return parsed
 
 
 def put_file_requests(
     *,
-    upload_url: str,
-    path: Path,
+    route: UploadTransportRoute,
+    source: VerifiedSourceFile,
     headers: dict[str, object],
     upload_error: type[RuntimeError],
-    curl_callback: Any,
     connect_timeout: float,
     read_timeout: float,
 ) -> None:
     import requests
 
-    request_headers = {
-        str(key): str(value) for key, value in dict(headers or {}).items()
-    }
-
-    def put_once(*, trust_env: bool):
-        with requests.Session() as session:
-            session.trust_env = trust_env
-            with path.open("rb") as fh:
-                return session.put(
-                    upload_url,
-                    data=fh,
-                    headers=request_headers,
-                    timeout=(float(connect_timeout), float(read_timeout)),
-                )
-
+    expected_length = int(source.identity["size_bytes"])
+    validate_upload_contract(
+        upload_url=route.upload_url,
+        headers=headers,
+        expected_length=expected_length,
+    )
+    if connect_timeout <= 0 or read_timeout <= 0:
+        raise ValueError("upload timeouts must be greater than zero")
+    request_headers = _validated_upload_headers(headers, expected_length=expected_length)
+    handle = source.prepare()
     try:
-        resp = put_once(trust_env=True)
-    except requests.exceptions.RequestException:
-        try:
-            resp = put_once(trust_env=False)
-        except requests.exceptions.RequestException as direct_error:
-            curl_callback(
-                upload_url=upload_url,
-                path=path,
+        with requests.Session() as session:
+            session.trust_env = False
+            resp = session.put(
+                route.upload_url,
+                data=handle,
                 headers=request_headers,
-                cause=direct_error,
-                connect_timeout=connect_timeout,
-                read_timeout=read_timeout,
+                timeout=(float(connect_timeout), float(read_timeout)),
+                allow_redirects=False,
+                proxies=route.request_proxies(),
             )
-            return
-    if resp.status_code >= 400:
+    except (
+        requests.exceptions.InvalidHeader,
+        requests.exceptions.InvalidSchema,
+        requests.exceptions.InvalidURL,
+        requests.exceptions.MissingSchema,
+        requests.exceptions.TooManyRedirects,
+        requests.exceptions.URLRequired,
+    ) as exc:
+        source.assert_unchanged(context="source file changed during failed transfer")
+        raise RuntimeError(
+            f"folder PUT request contract is invalid: {type(exc).__name__}"
+        ) from None
+    except (
+        requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.ContentDecodingError,
+        requests.exceptions.Timeout,
+    ) as exc:
+        source.assert_unchanged(context="source file changed during failed transfer")
+        raise _UploadTransportError("folder PUT") from exc
+    except requests.exceptions.RequestException as exc:
+        source.assert_unchanged(context="source file changed during failed transfer")
+        raise RuntimeError(
+            f"folder PUT request failed with non-transport error: {type(exc).__name__}"
+        ) from None
+    source.assert_position(expected_length)
+    source.assert_unchanged()
+    if not 200 <= int(resp.status_code) < 300:
         raise upload_error(
             status=int(resp.status_code),
             reason=str(resp.reason or ""),
             detail=resp.text[:500],
         )
-
-
-def put_file_curl(
-    *,
-    upload_url: str,
-    path: Path,
-    headers: dict[str, object],
-    cause: BaseException,
-    connect_timeout: float,
-    read_timeout: float,
-) -> None:
-    curl = shutil.which("curl")
-    if not curl:
-        raise cause
-    config_lines = [f"url = {_curl_config_quote(upload_url)}"]
-    for key, value in dict(headers or {}).items():
-        config_lines.append(f"header = {_curl_config_quote(f'{key}: {value}')}")
-    proc = subprocess.run(
-        [
-            curl,
-            "-fsS",
-            "-X",
-            "PUT",
-            "--connect-timeout",
-            str(max(1.0, float(connect_timeout))),
-            "--max-time",
-            str(max(1.0, float(read_timeout))),
-            "--config",
-            "-",
-            "--data-binary",
-            "@" + str(path),
-        ],
-        input="\n".join(config_lines) + "\n",
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        detail = proc.stderr.strip()[:500]
-        raise RuntimeError(
-            f"upload failed via curl: exit {proc.returncode}: {detail}"
-        ) from cause
-
-
-def _curl_config_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "") + '"'
-
-
-def put_file_part(
-    *,
-    upload_url: str,
-    path: Path,
-    offset: int,
-    size: int,
-    headers: dict[str, object],
-    upload_chunk_size: int,
-) -> str:
-    clean_headers = {str(key): str(value) for key, value in dict(headers or {}).items()}
-    clean_headers["Content-Length"] = str(int(size))
-    parsed = parse.urlsplit(upload_url)
-    if parsed.scheme not in {"http", "https"}:
-        raise RuntimeError(f"unsupported upload URL scheme: {parsed.scheme}")
-    target = parsed.path or "/"
-    if parsed.query:
-        target = f"{target}?{parsed.query}"
-    connection_cls = (
-        http.client.HTTPSConnection
-        if parsed.scheme == "https"
-        else http.client.HTTPConnection
-    )
-    conn = connection_cls(parsed.netloc, timeout=600)
-    remaining = int(size)
-    with path.open("rb") as fh:
-        fh.seek(int(offset))
-        try:
-            conn.putrequest("PUT", target)
-            for key, value in clean_headers.items():
-                conn.putheader(key, value)
-            conn.endheaders()
-            while remaining > 0:
-                chunk = fh.read(min(upload_chunk_size, remaining))
-                if not chunk:
-                    break
-                conn.send(chunk)
-                remaining -= len(chunk)
-            if remaining != 0:
-                raise RuntimeError(
-                    f"short read while uploading part: remaining={remaining}"
-                )
-            resp = conn.getresponse()
-            body = resp.read()
-            if resp.status >= 400:
-                detail = body.decode("utf-8", "replace")[:500]
-                raise RuntimeError(
-                    f"part upload failed: HTTP {resp.status} {resp.reason}: {detail}"
-                )
-            etag = str(resp.getheader("ETag") or "").strip().strip('"')
-            if not etag:
-                raise RuntimeError("part upload response did not include ETag")
-            return etag
-        finally:
-            conn.close()
-
-
-def put_file_part_with_retries(
-    *,
-    put_part_callback: Any,
-    upload_url: str,
-    path: Path,
-    offset: int,
-    size: int,
-    headers: dict[str, object],
-    retries: int,
-    base_delay_sec: float,
-) -> str:
-    attempts = max(1, int(retries or 1))
-    delay = max(0.1, float(base_delay_sec or 0.1))
-    last_error: BaseException | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            return put_part_callback(
-                upload_url=upload_url,
-                path=path,
-                offset=offset,
-                size=size,
-                headers=headers,
-            )
-        except Exception as exc:
-            last_error = exc
-            if attempt >= attempts:
-                break
-            time.sleep(min(30.0, delay * (2 ** (attempt - 1))))
-    assert last_error is not None
-    raise last_error

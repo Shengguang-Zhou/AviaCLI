@@ -1,0 +1,53 @@
+{
+  "schema": "avia.import-complete-queued/v1",
+  "fields": [
+    "dataset_manifest_ref",
+    "dataset_version_id",
+    "dispatch_mode",
+    "import_id",
+    "project_id",
+    "read_lease",
+    "reason",
+    "status",
+    "version_ref",
+    "worker_task_id",
+    "workspace_id"
+  ],
+  "constants": {
+    "reason": "queued",
+    "status": "queued"
+  },
+  "nonempty_strings": [
+    "dataset_version_id",
+    "dispatch_mode",
+    "import_id",
+    "project_id",
+    "worker_task_id",
+    "workspace_id"
+  ],
+  "object_fields": [
+    "dataset_manifest_ref",
+    "read_lease",
+    "version_ref"
+  ],
+  "example": {
+    "workspace_id": "ws_contract",
+    "project_id": "proj_contract",
+    "import_id": "imp_contract",
+    "status": "queued",
+    "dataset_manifest_ref": {
+      "id": "dm_imp_contract"
+    },
+    "read_lease": {
+      "id": "lease_imp_contract",
+      "dataset_manifest_ref_id": "dm_imp_contract"
+    },
+    "reason": "queued",
+    "dispatch_mode": "celery",
+    "worker_task_id": "avia-import:imp_contract:1",
+    "dataset_version_id": "dsv_contract",
+    "version_ref": {
+      "dataset_version_id": "dsv_contract"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+when:
+  - event: [pull_request, manual]
+
+labels:
+  backend: local
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git:2.9.2
+    settings:
+      lfs: false
+
+matrix:
+  PYTHON_VERSION: ["3.10", "3.11", "3.12"]
+
+steps:
+  quality:
+    image: bash
+    environment:
+      PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      UV_CACHE_DIR: /mnt/data/avia/cache/uv
+      UV_LINK_MODE: hardlink
+      UV_PYTHON_INSTALL_DIR: /mnt/data/avia/python
+      UV_PYTHON_DOWNLOADS: never
+    commands:
+      - uv sync --python ${PYTHON_VERSION} --frozen --all-packages --group dev
+      - uv run --python ${PYTHON_VERSION} ruff check packages tests
+      - uv run --python ${PYTHON_VERSION} ruff format --check packages tests
+      - uv run --python ${PYTHON_VERSION} pytest -W error -p no:cacheprovider -q
+
+  package:
+    image: bash
+    environment:
+      PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      UV_CACHE_DIR: /mnt/data/avia/cache/uv
+      UV_LINK_MODE: hardlink
+      UV_PYTHON_INSTALL_DIR: /mnt/data/avia/python
+      UV_PYTHON_DOWNLOADS: never
+    when:
+      - matrix:
+          PYTHON_VERSION: "3.12"
+    commands:
+      - |
+        build_dir="$(mktemp -d /tmp/avia-cli-dist.XXXXXX)"
+        trap 'rm -rf "$${build_dir}"' EXIT
+        uv build --package avia-cli --out-dir "$${build_dir}"
+        test "$(find "$${build_dir}" -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+        test "$(find "$${build_dir}" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1

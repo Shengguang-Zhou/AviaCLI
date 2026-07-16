@@ -7,71 +7,117 @@ from typing import Any
 from urllib import parse
 
 from avia_cli.core.uploads.api import _project_path, _request_json_with_retries
+from avia_cli.core.uploads.contracts import require_format_task
 from avia_cli.core.uploads.manifest import _is_image_path, scan_source_manifest
-from avia_cli.core.uploads.state import _safe_state_segment
+from avia_cli.core.atomic_file import read_regular_file
+from avia_cli.core.uploads.response_contracts import (
+    IMPORT_STATUSES,
+    parse_version_ref_identity,
+)
+from avia_cli.core.uploads.state import _safe_state_segment, _validate_state
+from avia_cli.core.uploads.validation import validate_dataset
 
-_TERMINAL_STATUSES = {
-    "succeeded",
-    "success",
-    "completed",
-    "complete",
-    "failed",
+_TERMINAL_STATUSES = {"succeeded", "failed"}
+_INGESTION_JOB_FIELDS = {
+    "created_at",
+    "dataset_validation",
+    "dataset_version_id",
     "error",
-    "cancelled",
-    "canceled",
+    "import_id",
+    "job_type",
+    "object_key",
+    "progress",
+    "status",
+    "updated_at",
+    "version_ref",
 }
-_CLASS_FILES = {"classes.txt", "data.yaml", "data.yml", "dataset.yaml", "dataset.yml"}
 
 
 def inspect_dataset(
     *,
     source: str | Path,
     format_name: str,
+    task_key: str,
     hash_workers: int = 1,
-    max_files: int | None = None,
-    max_samples: int | None = None,
 ) -> dict[str, Any]:
-    manifest = scan_source_manifest(
-        source,
-        include_sha256=False,
-        include_dimensions=False,
-        hash_workers=hash_workers,
-        max_files=max_files,
-        max_samples=max_samples,
-        format_name=format_name,
-    )
-    return _manifest_summary(manifest, format_name=format_name)
+    format_name, task_key = require_format_task(format_name=format_name, task_key=task_key)
+    try:
+        manifest = scan_source_manifest(
+            source,
+            include_dimensions=False,
+            hash_workers=hash_workers,
+            format_name=format_name,
+        )
+    except RuntimeError as exc:
+        return {
+            "source": str(Path(source).expanduser().resolve()),
+            "format": format_name,
+            "task_key": task_key,
+            "file_count": 0,
+            "image_count": 0,
+            "label_count": 0,
+            "total_bytes": 0,
+            "classes": [],
+            "status": "failed",
+            "error_count": 1,
+            "warning_count": 0,
+            "errors": [
+                {
+                    "code": "invalid_image",
+                    "message": str(exc),
+                    "path": str(getattr(exc, "relative_path", "")),
+                }
+            ],
+            "warnings": [],
+        }
+    return _manifest_summary(manifest, format_name=format_name, task_key=task_key)
 
 
 def verify_dataset(
     *,
     source: str | Path,
     format_name: str,
+    task_key: str,
     hash_workers: int = 1,
-    max_files: int | None = None,
-    max_samples: int | None = None,
 ) -> dict[str, Any]:
-    manifest = scan_source_manifest(
-        source,
-        include_sha256=False,
-        include_dimensions=False,
-        hash_workers=hash_workers,
-        max_files=max_files,
-        max_samples=max_samples,
-        format_name=format_name,
-    )
-    summary = _manifest_summary(manifest, format_name=format_name)
-    errors: list[dict[str, Any]] = []
-    warnings: list[dict[str, Any]] = []
-    if str(format_name).lower() == "yolo":
-        _verify_yolo_manifest(
-            source_root=Path(str(manifest["source"])),
-            manifest=manifest,
-            errors=errors,
-            warnings=warnings,
+    format_name, task_key = require_format_task(format_name=format_name, task_key=task_key)
+    try:
+        manifest = scan_source_manifest(
+            source,
+            include_dimensions=False,
+            hash_workers=hash_workers,
+            format_name=format_name,
         )
-    elif int(summary["image_count"]) == 0:
-        errors.append({"code": "no_images", "message": "dataset has no image files"})
+    except RuntimeError as exc:
+        return {
+            "source": str(Path(source).expanduser().resolve()),
+            "format": format_name,
+            "task_key": task_key,
+            "file_count": 0,
+            "image_count": 0,
+            "label_count": 0,
+            "total_bytes": 0,
+            "classes": [],
+            "status": "failed",
+            "error_count": 1,
+            "warning_count": 0,
+            "errors": [
+                {
+                    "code": "invalid_image",
+                    "message": str(exc),
+                    "path": str(getattr(exc, "relative_path", "")),
+                }
+            ],
+            "warnings": [],
+        }
+    summary = _manifest_summary(manifest, format_name=format_name, task_key=task_key)
+    classes, errors, warnings = validate_dataset(
+        source_root=Path(str(manifest["source"])),
+        manifest=manifest,
+        format_name=format_name,
+        task_key=task_key,
+    )
+    summary["classes"] = classes
     result = {
         **summary,
         "status": "failed" if errors else "ok",
@@ -122,7 +168,9 @@ def build_cleanup_plan(
     }
 
 
-def _manifest_summary(manifest: dict[str, object], *, format_name: str) -> dict[str, Any]:
+def _manifest_summary(
+    manifest: dict[str, object], *, format_name: str, task_key: str
+) -> dict[str, Any]:
     files = [dict(item) for item in list(manifest.get("files") or []) if isinstance(item, dict)]
     image_paths = [
         str(item.get("relative_path") or "")
@@ -138,6 +186,7 @@ def _manifest_summary(manifest: dict[str, object], *, format_name: str) -> dict[
     return {
         "source": str(manifest["source"]),
         "format": str(format_name).lower(),
+        "task_key": str(task_key).lower(),
         "file_count": int(manifest.get("file_count") or 0),
         "total_bytes": int(manifest.get("total_bytes") or 0),
         "image_count": len(image_paths),
@@ -147,136 +196,6 @@ def _manifest_summary(manifest: dict[str, object], *, format_name: str) -> dict[
     }
 
 
-def _verify_yolo_manifest(
-    *,
-    source_root: Path,
-    manifest: dict[str, object],
-    errors: list[dict[str, Any]],
-    warnings: list[dict[str, Any]],
-) -> None:
-    files = [dict(item) for item in list(manifest.get("files") or []) if isinstance(item, dict)]
-    relative_paths = {str(item.get("relative_path") or "") for item in files}
-    image_paths = sorted(
-        path for path in relative_paths if path.startswith("images/") and _is_image_path(path)
-    )
-    label_paths = sorted(
-        path for path in relative_paths if path.startswith("labels/") and path.endswith(".txt")
-    )
-    classes = [str(item) for item in list(manifest.get("classes") or [])]
-    if not image_paths:
-        errors.append({"code": "no_images", "message": "YOLO dataset has no images/"})
-    if not classes and not (relative_paths & _CLASS_FILES):
-        warnings.append(
-            {
-                "code": "missing_class_names",
-                "message": "YOLO dataset has no classes.txt or data.yaml class names",
-            }
-        )
-    expected_labels = {_label_path_for_image(path) for path in image_paths}
-    for image_path in image_paths:
-        expected = _label_path_for_image(image_path)
-        if expected not in relative_paths:
-            warnings.append(
-                {
-                    "code": "missing_yolo_label",
-                    "path": image_path,
-                    "expected_label_path": expected,
-                    "message": "image has no matching YOLO label file",
-                }
-            )
-    for label_path in label_paths:
-        if label_path not in expected_labels:
-            warnings.append(
-                {
-                    "code": "orphan_yolo_label",
-                    "path": label_path,
-                    "message": "label has no matching image file",
-                }
-            )
-        _verify_yolo_label_file(
-            path=source_root / label_path,
-            relative_path=label_path,
-            class_count=len(classes),
-            errors=errors,
-            warnings=warnings,
-        )
-
-
-def _verify_yolo_label_file(
-    *,
-    path: Path,
-    relative_path: str,
-    class_count: int,
-    errors: list[dict[str, Any]],
-    warnings: list[dict[str, Any]],
-) -> None:
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        errors.append(
-            {
-                "code": "label_read_failed",
-                "path": relative_path,
-                "message": str(exc),
-            }
-        )
-        return
-    for line_number, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = line.split()
-        if len(parts) < 5:
-            errors.append(
-                {
-                    "code": "invalid_yolo_label",
-                    "path": relative_path,
-                    "line": line_number,
-                    "message": "YOLO label rows must contain class plus coordinates",
-                }
-            )
-            continue
-        try:
-            class_id = int(float(parts[0]))
-            [float(item) for item in parts[1:]]
-        except ValueError:
-            errors.append(
-                {
-                    "code": "invalid_yolo_label",
-                    "path": relative_path,
-                    "line": line_number,
-                    "message": "YOLO label rows must be numeric",
-                }
-            )
-            continue
-        if class_id < 0:
-            errors.append(
-                {
-                    "code": "invalid_yolo_class",
-                    "path": relative_path,
-                    "line": line_number,
-                    "message": "YOLO class id must be non-negative",
-                }
-            )
-        elif class_count and class_id >= class_count:
-            warnings.append(
-                {
-                    "code": "unknown_yolo_class",
-                    "path": relative_path,
-                    "line": line_number,
-                    "class_id": class_id,
-                    "message": "YOLO class id is outside declared class names",
-                }
-            )
-
-
-def _label_path_for_image(image_path: str) -> str:
-    stem = Path(image_path).with_suffix("").as_posix()
-    if stem.startswith("images/"):
-        return f"labels/{stem[len('images/') :]}.txt"
-    return f"{stem}.txt"
-
-
 def _list_server_imports(
     *,
     api: str,
@@ -284,7 +203,10 @@ def _list_server_imports(
     project_id: str,
     limit: int,
 ) -> list[dict[str, Any]]:
-    query = parse.urlencode({"limit": max(1, min(200, int(limit or 50)))})
+    parsed_limit = int(limit)
+    if parsed_limit < 1 or parsed_limit > 200:
+        raise ValueError("cleanup plan limit must be between 1 and 200")
+    query = parse.urlencode({"limit": parsed_limit})
     response = _request_json_with_retries(
         method="GET",
         url=f"{_project_path(api, project_id, 'ingestion-jobs')}?{query}",
@@ -293,21 +215,64 @@ def _list_server_imports(
         retries=2,
         label="cleanup-plan",
     )
-    return [
-        _compact_server_import(dict(item))
-        for item in list(response.get("imports") or [])
-        if isinstance(item, dict)
-    ]
+    if set(response) != {"imports", "next_cursor", "project_id"}:
+        raise RuntimeError("ingestion-jobs response fields must be exact")
+    if response.get("project_id") != project_id or not isinstance(response.get("imports"), list):
+        raise RuntimeError("ingestion-jobs response identity does not match the request")
+    next_cursor = response.get("next_cursor")
+    if next_cursor is not None and (
+        not isinstance(next_cursor, str) or not next_cursor or next_cursor != next_cursor.strip()
+    ):
+        raise RuntimeError("ingestion-jobs next_cursor must be null or a canonical string")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in response["imports"]:
+        if not isinstance(item, dict):
+            raise RuntimeError("ingestion-jobs entries must be objects")
+        _validate_server_import(item)
+        import_id = item["import_id"]
+        status = item.get("status")
+        if not import_id or import_id in seen or status not in IMPORT_STATUSES:
+            raise RuntimeError("ingestion-jobs entries require unique ids and canonical statuses")
+        seen.add(import_id)
+        result.append(_compact_server_import(item))
+    return result
+
+
+def _validate_server_import(item: dict[str, Any]) -> None:
+    if set(item) != _INGESTION_JOB_FIELDS:
+        raise RuntimeError(
+            "ingestion-jobs entry fields must be exact: "
+            f"expected={sorted(_INGESTION_JOB_FIELDS)} actual={sorted(item)}"
+        )
+    for key in ("import_id", "job_type", "object_key"):
+        value = item.get(key)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise RuntimeError(f"ingestion-jobs entry {key} must be a canonical non-empty string")
+    for key in ("progress", "error"):
+        if not isinstance(item.get(key), dict):
+            raise RuntimeError(f"ingestion-jobs entry {key} must be an object")
+    dataset_validation = item.get("dataset_validation")
+    if dataset_validation is not None and not isinstance(dataset_validation, dict):
+        raise RuntimeError("ingestion-jobs entry dataset_validation must be null or an object")
+    parse_version_ref_identity(item, label="ingestion-jobs entry")
+    for key in ("created_at", "updated_at"):
+        value = item.get(key)
+        if value is not None and (
+            not isinstance(value, str) or not value or value != value.strip()
+        ):
+            raise RuntimeError(f"ingestion-jobs entry {key} must be null or a canonical string")
 
 
 def _compact_server_import(item: dict[str, Any]) -> dict[str, Any]:
     compact: dict[str, Any] = {
-        "import_id": str(item.get("import_id") or ""),
-        "status": str(item.get("status") or ""),
+        "import_id": item["import_id"],
+        "status": item["status"],
+        "job_type": item["job_type"],
+        "object_key": item["object_key"],
     }
-    for key in ("source", "format", "file_count", "image_count", "created_at", "updated_at"):
-        if key in item:
-            compact[key] = item[key]
+    for key in ("dataset_version_id", "version_ref", "created_at", "updated_at"):
+        compact[key] = item[key]
     progress = item.get("progress")
     if isinstance(progress, dict):
         compact["progress"] = {
@@ -344,11 +309,15 @@ def _load_local_states(
     states: list[dict[str, Any]] = []
     for path in sorted(project_dir.glob("*.json")):
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+            raw = json.loads(read_regular_file(path).decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"invalid cleanup state {path}: {exc}") from exc
         if not isinstance(raw, dict):
-            continue
+            raise SystemExit(f"invalid cleanup state {path}: expected JSON object")
+        try:
+            _validate_state(raw, path=path)
+        except ValueError as exc:
+            raise SystemExit(f"invalid cleanup state {path}: {exc}") from exc
         files = dict(raw.get("files") or {})
         states.append(
             {
@@ -356,7 +325,8 @@ def _load_local_states(
                 "import_id": str(raw.get("import_id") or ""),
                 "source": str(raw.get("source") or ""),
                 "format": str(raw.get("format") or ""),
-                "completed": bool(raw.get("completed")),
+                "task_key": str(raw.get("task_key") or ""),
+                "phase": str(raw["phase"]),
                 "total_files": len(files),
                 "uploaded_files": sum(
                     1
@@ -388,7 +358,7 @@ def _build_cleanup_actions(
     for state in local_states:
         import_id = str(state.get("import_id") or "")
         status = str(server_by_import.get(import_id, {}).get("status") or "").lower()
-        if bool(state.get("completed")) and status in _TERMINAL_STATUSES:
+        if state.get("phase") == "completed" and status in _TERMINAL_STATUSES:
             actions.append(
                 {
                     "kind": "remove_local_state",

@@ -4,6 +4,7 @@ import argparse
 import os
 from urllib import parse
 
+from avia_cli.core.api_base import canonical_api_base
 from avia_cli.stores.keyring import CliAuthProfile, load_cli_auth_profile
 from avia_cli.core.auth.tokens import AuthTokenManager
 
@@ -26,7 +27,7 @@ def _env_has_refresh_credentials() -> bool:
 
 
 def api_from_args(args: argparse.Namespace) -> str:
-    api = str(getattr(args, "api", "") or os.environ.get("AVIA_API_BASE", "")).strip()
+    api = str(getattr(args, "api", "") or os.environ.get("AVIA_API_BASE", ""))
     if not api:
         profile = _load_saved_auth_profile()
         if profile is not None:
@@ -36,7 +37,10 @@ def api_from_args(args: argparse.Namespace) -> str:
             "API base is required. Pass --api, set AVIA_API_BASE, "
             "or run `avia auth login --api ...`."
         )
-    return api.rstrip("/")
+    try:
+        return canonical_api_base(api)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def token_from_args(args: argparse.Namespace, *, api: str) -> AuthTokenManager:
@@ -44,7 +48,7 @@ def token_from_args(args: argparse.Namespace, *, api: str) -> AuthTokenManager:
     if not token:
         profile = _load_saved_auth_profile()
         if profile is not None:
-            if profile.api.rstrip("/") == str(api).rstrip("/"):
+            if profile.api == api:
                 token = profile.token
             elif not _env_has_refresh_credentials():
                 raise SystemExit(
@@ -62,6 +66,5 @@ def token_from_args(args: argparse.Namespace, *, api: str) -> AuthTokenManager:
 
 def project_path(api: str, project_id: str, suffix: str) -> str:
     return (
-        f"{api.rstrip('/')}/projects/{parse.quote(str(project_id), safe='')}/"
-        f"{suffix.lstrip('/')}"
+        f"{api.rstrip('/')}/projects/{parse.quote(str(project_id), safe='')}/{suffix.lstrip('/')}"
     )

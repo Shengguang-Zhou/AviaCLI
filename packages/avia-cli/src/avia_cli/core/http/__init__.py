@@ -1,1 +1,1 @@
-"""HTTP helpers for Avia SDK."""
+"""HTTP helpers for AviaCLI."""

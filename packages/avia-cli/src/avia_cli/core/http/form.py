@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 from urllib import error as urlerror, parse, request
 
 from avia_cli.core.auth.tokens import refresh_after_auth_error
-from avia_cli.core.errors import _AviaHTTPError
+from avia_cli.core.errors import _AviaHTTPError, decode_json_response
+from avia_cli.core.http import no_redirect
 
 
 def _request_form_json(
@@ -29,7 +29,7 @@ def _request_form_json(
             method=method.upper(),
         )
         try:
-            with request.urlopen(req, timeout=timeout) as resp:
+            with no_redirect.open_no_redirect(req, timeout=float(timeout)) as resp:
                 raw = resp.read()
             break
         except urlerror.HTTPError as exc:
@@ -46,4 +46,4 @@ def _request_form_json(
             raise error from exc
     if not raw:
         return {}
-    return json.loads(raw.decode("utf-8"))
+    return decode_json_response(raw, url=url)
