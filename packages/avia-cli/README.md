@@ -147,8 +147,10 @@ The published distribution is intentionally a single package. Internal modules
 under `avia_cli.core` keep auth and upload code reusable without exposing a
 separate SDK package before that API is stable.
 
-Internal PR/manual CI uses Woodpecker's native authenticated
-`woodpeckerci/plugin-git:2.9.2` clone with LFS retrieval disabled. It shares
-`/mnt/data/avia/cache/uv` with the AVR repositories and uses same-device hardlinks; custom checkout
-scripts, per-repository uv caches, and copy mode are not part of the CI contract. The root project
-pins uv 0.8.3; quality runs on Python 3.10, 3.11, and 3.12 before one Python 3.12 package build.
+Internal PR/manual CI uses Woodpecker 3.14's local backend, where
+`woodpeckerci/plugin-git:2.9.2` is the host clone plugin identifier rather than an OCI image pin.
+Clone-only NETRC credentials are rejected by every ordinary `/usr/bin/bash` step. The workflow
+shares `/mnt/data/avia/cache/uv` with the AVR repositories and uses same-device hardlinks; custom
+checkout scripts, per-repository uv caches, and copy mode are not part of the CI contract. The
+root project pins uv 0.8.3; separate Python 3.10, 3.11, and 3.12 matrix workflows run owned-warning
+quality gates before the Python 3.12 workflow builds the package once.

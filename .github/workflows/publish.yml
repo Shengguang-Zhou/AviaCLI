@@ -32,7 +32,9 @@ jobs:
         run: uv sync --frozen --all-packages --group dev
 
       - name: Run tests
-        run: uv run pytest -W error -p no:cacheprovider -q
+        run: |
+          uv run python -W error -m compileall -q -f packages/avia-cli/src/avia_cli tests
+          uv run pytest -p no:cacheprovider -q
 
       - name: Run lint
         run: |

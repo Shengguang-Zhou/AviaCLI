@@ -27,6 +27,13 @@ pythonpath = [
   "packages/avia-cli/src",
 ]
 testpaths = ["tests"]
+filterwarnings = [
+  "default",
+  "error:::avia_cli(\\.|$)",
+  "error:::tests(\\.|$)",
+  "error:::conftest$",
+  "error:::test_",
+]
 
 [tool.ruff]
 target-version = "py310"
