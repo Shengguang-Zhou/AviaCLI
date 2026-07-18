@@ -40,6 +40,33 @@ BANNED_METADATA_TERMS = (
 )
 
 
+def _isolated_pytest_environment() -> dict[str, str]:
+    excluded = {"PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONWARNINGS"}
+    environment = {name: value for name, value in os.environ.items() if name not in excluded}
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    return environment
+
+
+def _handler_records_bound_exception(handler: ast.ExceptHandler) -> bool:
+    if handler.name is None:
+        return False
+
+    for node in ast.walk(handler):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = node.value
+            if isinstance(value, ast.Name) and value.id == handler.name:
+                return True
+        if isinstance(node, ast.Call):
+            arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+            if any(
+                isinstance(descendant, ast.Name) and descendant.id == handler.name
+                for argument in arguments
+                for descendant in ast.walk(argument)
+            ):
+                return True
+    return False
+
+
 def test_repository_builds_one_distribution_with_avia_console_script() -> None:
     root_project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     cli_project = (CLI_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -203,7 +230,7 @@ def test_pytest_warning_policy_fails_owned_modules_and_reports_dependencies(tmp_
         "    )\n",
         encoding="utf-8",
     )
-    environment = {name: value for name, value in os.environ.items() if name != "PYTEST_ADDOPTS"}
+    environment = _isolated_pytest_environment()
 
     owned = subprocess.run(
         [
@@ -240,17 +267,20 @@ def test_pytest_warning_policy_fails_owned_modules_and_reports_dependencies(tmp_
         env=environment,
     )
 
-    assert owned.returncode != 0, owned.stdout
-    assert "4 failed" in owned.stdout
+    owned_output = owned.stdout + owned.stderr
+    dependency_output = dependency.stdout + dependency.stderr
+
+    assert owned.returncode != 0, owned_output
+    assert "4 failed" in owned_output
     for module in (
         "avia_cli.warning_probe",
         "tests.warning_probe",
         "conftest",
         "test_warning_probe",
     ):
-        assert f"owned warning probe: {module}" in owned.stdout
-    assert dependency.returncode == 0, dependency.stdout + dependency.stderr
-    assert "dependency warning probe" in dependency.stdout
+        assert f"owned warning probe: {module}" in owned_output
+    assert dependency.returncode == 0, dependency_output
+    assert "dependency warning probe" in dependency_output
 
 
 def test_internal_ci_runs_quality_on_every_supported_python_and_builds_once() -> None:
@@ -294,13 +324,6 @@ def test_woodpecker_shell_locals_are_escaped_until_shell_execution() -> None:
 
 
 def test_broad_exception_handlers_record_or_raise_every_failure() -> None:
-    recorded_failure_markers = (
-        "completion_errors.append",
-        "put_failures.append",
-        "primary_error =",
-        "last_error =",
-    )
-
     for path in sorted(CLI_SRC.rglob("*.py")):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -316,8 +339,7 @@ def test_broad_exception_handlers_record_or_raise_every_failure() -> None:
             )
             if any(isinstance(node, ast.Raise) for node in ast.walk(handler)):
                 continue
-            segment = ast.get_source_segment(source, handler) or ""
-            assert any(marker in segment for marker in recorded_failure_markers), (
+            assert _handler_records_bound_exception(handler), (
                 f"broad exception is neither raised nor recorded: {path}:{handler.lineno}"
             )
 
