@@ -34,7 +34,8 @@ uvx --from avia-cli avia --help
 
 ```bash
 uv sync --all-packages --group dev
-uv run pytest -W error -q
+uv run python -W error -m compileall -q -f packages/avia-cli/src/avia_cli tests
+uv run pytest -p no:cacheprovider -q
 uv run ruff check packages tests
 uv run ruff format --check packages tests
 uv build --package avia-cli
@@ -45,10 +46,12 @@ The internal runner uses system Python 3.10/3.12 plus the managed-interpreter ro
 `/mnt/data/avia/python` for Python 3.11. CI sets both that root and `UV_PYTHON_DOWNLOADS=never`, so
 a missing runtime is an observable runner error rather than an implicit network download.
 
-Pull requests and manual internal runs use `.woodpecker/ci.yml` on the local backend with the
-native authenticated clone. The workflow uses uv 0.8.3 to run frozen dependency sync, the complete
-warning-strict test suite, and Ruff lint/format checks on Python 3.10, 3.11, and 3.12, then builds
-the sdist and wheel once on Python 3.12.
+Pull requests and manual internal runs use `.woodpecker/ci.yml` on Woodpecker 3.14's local backend.
+The clone image is a plugin identifier, while ordinary step images are exact host executables.
+The workflow verifies its host Bash/plugin-git toolchain, rejects clone-only NETRC credentials in
+every ordinary step, and uses an explicit serial DAG inside each matrix workflow. It runs frozen
+dependency sync, owned-code warning gates, and Ruff lint/format checks on Python 3.10, 3.11, and
+3.12, then builds the sdist and wheel once on Python 3.12. Third-party warnings remain visible.
 
 ## Boundary
 
@@ -78,12 +81,13 @@ YOLO segment input follows AviaTraining/Ultralytics runtime semantics: official 
 multi-segment walks are valid, while rasterizable crossing topology is surfaced as a structured
 warning rather than misclassified as an upload-blocking error.
 
-Woodpecker uses the pinned native authenticated `woodpeckerci/plugin-git:2.9.2` clone with
-`lfs: false`, the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
-`UV_PYTHON_DOWNLOADS=never`. Its clone container has no explicit environment so Woodpecker can
-classify the trusted plugin and inject netrc; the server-owned GitHub URL proxy is carried through
-`GIT_CONFIG_*`. The workflow has no custom checkout path and the source-boundary gate rejects
-tracked Git LFS pointer files.
+With the local backend, `woodpeckerci/plugin-git:2.9.2` identifies the host `plugin-git` clone
+binary; it is not an OCI image pin. The clone keeps `lfs: false` and is the only boundary that may
+receive Woodpecker NETRC variables. Ordinary steps run absolute `/usr/bin/bash`, fail on any
+non-empty `CI_NETRC_*`, and use the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
+`UV_PYTHON_DOWNLOADS=never`. The server-owned GitHub URL proxy is carried through `GIT_CONFIG_*`.
+The workflow has no custom checkout path and the source-boundary gate rejects tracked Git LFS
+pointer files.
 
 ## Release
 

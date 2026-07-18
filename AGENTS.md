@@ -77,19 +77,27 @@ Run the same release gates as `.woodpecker/ci.yml`:
 uv sync --frozen --all-packages --group dev
 uv run ruff check packages tests
 uv run ruff format --check packages tests
-uv run pytest -W error -p no:cacheprovider -q
+uv run python -W error -m compileall -q -f packages/avia-cli/src/avia_cli tests
+uv run pytest -p no:cacheprovider -q
 uv build --package avia-cli
 ```
 
-The internal Woodpecker PR/manual workflow is the quality-gate source of truth. It uses the native
-authenticated clone contract with Woodpecker 3.14's trusted `woodpeckerci/plugin-git:2.9.2`
-and `lfs: false`. Keep the clone container free of explicit environment variables: Woodpecker
-classifies it as a plugin before injecting `CI_NETRC_*`. The server supplies a GitHub-URL-scoped
-`GIT_CONFIG_*` proxy to `127.0.0.1:7897`, which does not proxy ordinary HTTP clients. Never restore
-`skip_clone` or a custom checkout script. Tracked sources must not be Git LFS pointer files. All
-repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this same-device workspace must use
-`UV_LINK_MODE=hardlink`, never copy mode. The runner pre-provisions all supported interpreters and
-the workflow sets `UV_PYTHON_DOWNLOADS=never`; CI must never fetch a Python runtime implicitly.
-GitHub Actions is release-only for tags/manual trusted
-publishing and runs the same frozen gates. Do not add hosted PR/main CI, server/GPU dependencies,
-or deployment behavior to this public client repository.
+The internal Woodpecker PR/manual workflow is the quality-gate source of truth. Under Woodpecker
+3.14's local backend, `woodpeckerci/plugin-git:2.9.2` is a clone plugin identifier, not an OCI
+image pin, while every ordinary step `image` is a host executable and must be absolute
+`/usr/bin/bash`. The first `host-toolchain` step verifies the bootstrap-owned Bash and plugin-git
+versions, `root:root 755` identities, and SHA256 values. Matrix combinations are separate
+workflows; inside each workflow, `host-toolchain -> quality -> package` is an explicit DAG so no
+two steps mutate the same workspace `.venv`. Keep the clone entry free of explicit environment
+variables: only that clone boundary may receive Woodpecker-injected `CI_NETRC_*`; every ordinary
+step must reject any non-empty `CI_NETRC_*` without printing its value. The server supplies a
+GitHub-URL-scoped `GIT_CONFIG_*` proxy to `127.0.0.1:7897`, which does not proxy ordinary HTTP
+clients. Never restore `skip_clone` or a custom checkout script. Tracked sources must not be Git
+LFS pointer files. All repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this
+same-device workspace must use `UV_LINK_MODE=hardlink`, never copy mode. The runner pre-provisions
+all supported interpreters and the workflow sets `UV_PYTHON_DOWNLOADS=never`; CI must never fetch
+a Python runtime implicitly. Compile-time warnings and pytest warnings owned by `avia_cli` or this
+repository's tests fail the gate; third-party warnings remain visible and are never suppressed or
+promoted by a global `-W error`. GitHub Actions is release-only for tags/manual trusted publishing
+and runs the same frozen gates. Do not add hosted PR/main CI, server/GPU dependencies, or
+deployment behavior to this public client repository.
