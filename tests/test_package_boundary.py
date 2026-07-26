@@ -116,7 +116,7 @@ def test_internal_pr_ci_uses_local_backend_shared_cache_and_runs_full_release_ga
     assert workflow["labels"] == {"backend": "local"}
     assert clone == {
         "image": "woodpeckerci/plugin-git:2.9.2",
-        "settings": {"lfs": False},
+        "settings": {"lfs": False, "partial": False},
     }
     assert list(steps) == ["host-toolchain", "quality", "package"]
     assert all(step["image"] == "/usr/bin/bash" for step in steps.values())
@@ -393,6 +393,8 @@ def test_package_readme_uses_the_canonical_clone_plugin_version() -> None:
     assert "plugin-git:2.9.2" in readme
     assert "plugin-git:2.8.0" not in readme
     assert "host clone plugin identifier rather than an OCI image pin" in readme
+    assert "disables LFS and partial clone" in readme
+    assert "second promisor-remote TLS request" in readme
     assert "Clone-only NETRC credentials are rejected" in readme
 
 
