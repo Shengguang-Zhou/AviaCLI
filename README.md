@@ -82,9 +82,11 @@ multi-segment walks are valid, while rasterizable crossing topology is surfaced 
 warning rather than misclassified as an upload-blocking error.
 
 With the local backend, `woodpeckerci/plugin-git:2.9.2` identifies the host `plugin-git` clone
-binary; it is not an OCI image pin. The clone keeps `lfs: false` and is the only boundary that may
-receive Woodpecker NETRC variables. Ordinary steps run absolute `/usr/bin/bash`, fail on any
-non-empty `CI_NETRC_*`, and use the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
+binary; it is not an OCI image pin. The clone disables LFS and partial clone. Its complete shallow
+fetch makes checkout and reset local, so a successfully fetched commit cannot later fail on a
+second promisor-remote TLS request. This clone is the only boundary that may receive Woodpecker
+NETRC variables. Ordinary steps run absolute `/usr/bin/bash`, fail on any non-empty `CI_NETRC_*`,
+and use the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
 `UV_PYTHON_DOWNLOADS=never`. The server-owned GitHub URL proxy is carried through `GIT_CONFIG_*`.
 The workflow has no custom checkout path and the source-boundary gate rejects tracked Git LFS
 pointer files.
