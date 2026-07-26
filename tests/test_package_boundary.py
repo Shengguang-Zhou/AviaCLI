@@ -116,7 +116,7 @@ def test_internal_pr_ci_uses_local_backend_shared_cache_and_runs_full_release_ga
     assert workflow["labels"] == {"backend": "local"}
     assert clone == {
         "image": "woodpeckerci/plugin-git:2.9.2",
-        "settings": {"lfs": False},
+        "settings": {"lfs": False, "partial": False},
     }
     assert list(steps) == ["host-toolchain", "quality", "package"]
     assert all(step["image"] == "/usr/bin/bash" for step in steps.values())

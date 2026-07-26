@@ -92,7 +92,8 @@ two steps mutate the same workspace `.venv`. Keep the clone entry free of explic
 variables: only that clone boundary may receive Woodpecker-injected `CI_NETRC_*`; every ordinary
 step must reject any non-empty `CI_NETRC_*` without printing its value. The server supplies a
 GitHub-URL-scoped `GIT_CONFIG_*` proxy to `127.0.0.1:7897`, which does not proxy ordinary HTTP
-clients. Never restore `skip_clone` or a custom checkout script. Tracked sources must not be Git
+clients. Native clone disables LFS and partial clone so checkout/reset cannot open a second
+promisor-network fetch. Never restore `skip_clone` or a custom checkout script. Tracked sources must not be Git
 LFS pointer files. All repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this
 same-device workspace must use `UV_LINK_MODE=hardlink`, never copy mode. The runner pre-provisions
 all supported interpreters and the workflow sets `UV_PYTHON_DOWNLOADS=never`; CI must never fetch
