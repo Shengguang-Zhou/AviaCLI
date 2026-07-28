@@ -594,6 +594,83 @@ def test_folder_upload_persists_pending_uuid_session_before_first_post_and_resum
     assert seen_payloads == [first_payload, first_payload]
 
 
+def test_anomalib_folder_upload_uses_binary_taxonomy_in_session_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "canonical-ad"
+    for relative in (
+        "train/good/train.png",
+        "val/good/val-good.png",
+        "val/bad/val-bad.png",
+        "test/good/test-good.png",
+        "test/bad/test-bad.png",
+    ):
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (16, 12)).save(path)
+    for relative in (
+        "ground_truth/val/bad/val-bad.png",
+        "ground_truth/test/bad/test-bad.png",
+    ):
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("L", (16, 12), color=255).save(path)
+
+    argv = [
+        "dataset",
+        "upload",
+        "--project",
+        "proj_123456789abc",
+        "--source",
+        str(source),
+        "--format",
+        "anomalib",
+        "--task-key",
+        "ad",
+        "--concurrency",
+        "1",
+        "--batch-size",
+        "100",
+        "--hash-workers",
+        "1",
+        "--batch-complete-concurrency",
+        "1",
+        "--stream-flush-size",
+        "1",
+        "--state-dir",
+        str(tmp_path / "state"),
+    ]
+    parser = _build_parser()
+    seen_payloads: list[dict[str, object]] = []
+
+    def capture_payload(**kwargs: object) -> dict[str, object]:
+        payload = kwargs.get("payload")
+        assert isinstance(payload, dict)
+        seen_payloads.append(dict(payload))
+        raise RuntimeError("stop after session payload")
+
+    monkeypatch.setattr("avia_cli.core.uploads.dataset._create_dataset_session", capture_payload)
+
+    with pytest.raises(RuntimeError, match="stop after session payload"):
+        upload_dataset(
+            parser.parse_args(argv),
+            api="https://avia.example/api/v1",
+            token="token",
+        )
+    with pytest.raises(RuntimeError, match="stop after session payload"):
+        upload_dataset(
+            parser.parse_args([*argv, "--resume"]),
+            api="https://avia.example/api/v1",
+            token="token",
+        )
+
+    assert len(seen_payloads) == 2
+    assert seen_payloads[0] == seen_payloads[1]
+    assert seen_payloads[0]["format"] == "anomalib"
+    assert seen_payloads[0]["task_key"] == "ad"
+    assert seen_payloads[0]["classes"] == ["good", "bad"]
+
+
 def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_peer_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

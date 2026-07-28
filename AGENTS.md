@@ -18,6 +18,13 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   validation also compares decoded dimensions with manifest dimensions when present.
 - Anomalib masks use Pillow's non-deprecated `get_flattened_data()` API, so the package requires
   Pillow 12.1 or newer; dependency metadata must not claim support for an older Pillow ABI.
+- Anomalib has one trainable folder contract: `train/good`, both
+  `val/{good,bad}` and `test/{good,bad}`, plus exact same-stem lowercase-PNG masks at
+  `ground_truth/{val,test}/bad`. Original MVTec defect-name directories, `validation`, `_mask`
+  suffixes, alternate split derivation, and nested role directories are invalid rather than
+  adapted. Root provenance files match the importer exactly: README, LICENSE, and
+  `source_records.json` only. Validation, inspection, and folder-session payloads expose only
+  `["good", "bad"]`.
 - The published package supports Python 3.10 through 3.12. The workspace, wheel metadata, NumPy
   1.x dependency, lock file, classifiers, internal CI, and release workflow must enforce that one
   range. Quality runs on all three interpreters; release artifacts are built and published once.
@@ -34,8 +41,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   topology is emitted as a structured `yolo_segment_topology` warning with exact path and line.
   COCO-to-YOLO conversion remains stricter because it must prove lossless single-polygon output.
 - Dataset source trees must not contain symbolic links, including broken links and links to
-  directories. Relative paths are unique canonical NFC POSIX paths. Only exact task media,
-  metadata, and explicitly documented provenance files are allowed.
+  directories. FIFOs, sockets, devices, and every other non-regular member are rejected at the
+  shared manifest boundary. Relative paths are unique canonical NFC POSIX paths. Only exact task
+  media, metadata, and explicitly documented provenance files are allowed.
 - Validation captures every regular-file identity. Hashing and every PUT retry must reuse an
   `O_NOFOLLOW` descriptor for that identity and fail on path, inode, size, or timestamp changes.
   Use the API-issued presigned URL unchanged; origin rewrites, Host overrides, and silent

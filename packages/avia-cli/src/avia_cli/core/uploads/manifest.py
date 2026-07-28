@@ -116,8 +116,14 @@ def scan_source_manifest(
                 "dataset paths must not contain control characters",
                 path=relative_path,
             )
-        if not path.is_file():
+        if path.is_dir():
             continue
+        if not path.is_file():
+            _raise_manifest_error(
+                "unsupported_dataset_member",
+                "dataset source tree must contain only regular files and directories",
+                path=relative_path,
+            )
         if is_client_state_path(relative):
             continue
         paths.append(path)

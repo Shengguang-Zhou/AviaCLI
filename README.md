@@ -60,7 +60,8 @@ imports, Runtime worker code, database models, Celery tasks, GPU/model
 libraries, vector store clients, or curation/quality algorithm implementations.
 
 Dataset uploads fail before network or disk side effects when an image cannot be fully decoded,
-the source tree contains a symbolic link, or validation fails. Folder session identity is a
+the source tree contains a symbolic link or non-regular member such as a FIFO/socket/device, or
+validation fails. Folder session identity is a
 canonical UUIDv4 persisted atomically before the first POST; `--resume` replays that exact
 pending request. Inspection, validation, and upload always cover the complete dataset and expose
 no historical truncation flags. Resume rejects a changed file set or file identity and rehashes
@@ -80,6 +81,11 @@ one connected component, no holes, and pixel-exact reconstruction from one full 
 YOLO segment input follows AviaTraining/Ultralytics runtime semantics: official thin-bridge
 multi-segment walks are valid, while rasterizable crossing topology is surfaced as a structured
 warning rather than misclassified as an upload-blocking error.
+Anomalib uses one explicit training layout: `train/good`, `val/{good,bad}`,
+`test/{good,bad}`, and `ground_truth/{val,test}/bad/<same-stem>.png`. The CLI rejects original
+MVTec defect-name folders, `validation`, `_mask` filename adaptation, nested role directories,
+missing roles, and missing masks before creating an upload session. Its only AD taxonomy is
+`["good", "bad"]`.
 
 With the local backend, `woodpeckerci/plugin-git:2.9.2` identifies the host `plugin-git` clone
 binary; it is not an OCI image pin. The clone disables LFS and partial clone. Its complete shallow

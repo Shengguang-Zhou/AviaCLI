@@ -68,7 +68,7 @@ avia dataset verify --source /data/multilabel --format yolo --task-key classify
 avia dataset verify --source /data/coco8-seg --format yolo --task-key segment
 avia dataset verify --source /data/coco8-pose --format yolo --task-key pose
 avia dataset verify --source /data/dota8-strict --format yolo --task-key obb
-avia dataset verify --source /data/mvtec-bottle --format anomalib --task-key ad
+avia dataset verify --source /data/avia/validation/avr-six-task-v2/ad --format anomalib --task-key ad
 ```
 
 Registering an existing object-store prefix uses one canonical URI form: a bare NFC POSIX object
@@ -84,9 +84,10 @@ avia import create \
 ```
 
 Validation fully decodes every image and rejects all symbolic links in the source tree, including
-broken links and linked directories. Inspection, verification, and upload always process the
-complete dataset. The historical archive-upload path was removed: folder sessions are the one
-durable, idempotent upload protocol.
+broken links and linked directories. The shared scanner also rejects FIFOs, sockets, devices, and
+every other non-regular member instead of silently omitting it. Inspection, verification, and
+upload always process the complete dataset. The historical archive-upload path was removed:
+folder sessions are the one durable, idempotent upload protocol.
 
 After validation, each upload is bound to the same regular-file identity used to compute its
 SHA-256 and dimensions. Hashing and PUT retries use an `O_NOFOLLOW`
@@ -111,9 +112,15 @@ Segment topology follows the AviaTraining/Ultralytics consumer: canonical thin b
 produce structured `yolo_segment_topology` warnings with exact file and line instead of rejecting
 official training data.
 Classification label files contain one unique class id per row. Anomalib
-validation requires `train/good`, a good evaluation split, named bad test
-samples, and one same-sized `ground_truth` mask per bad sample. Validation
-errors exit non-zero; missing labels or unknown classes are never warnings.
+validation requires exactly `train/good`, `val/{good,bad}`, `test/{good,bad}`,
+and one `ground_truth/{val,test}/bad/<same-stem>.png` mask per bad evaluation
+sample. Role images are direct children and use JPG, JPEG, PNG, or WebP; masks
+use lowercase `.png`. Original MVTec defect-name directories, `validation`,
+`_mask` suffix adaptation, missing roles, and nested role directories are
+rejected. Root documentation is limited to README, LICENSE, and
+`source_records.json`, matching the importer. Validation reports the sole binary
+taxonomy `["good", "bad"]`.
+Validation errors exit non-zero; missing labels or unknown classes are never warnings.
 For multilabel classification, an existing empty label file is an explicit
 negative sample; an absent label file remains an error.
 
