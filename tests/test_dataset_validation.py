@@ -750,13 +750,16 @@ def test_verify_imagenet_rejects_unknown_validation_class(tmp_path: Path) -> Non
 
 
 def _write_anomalib_dataset(root: Path) -> None:
-    _write_image(root / "train" / "good" / "000.png")
-    _write_image(root / "test" / "good" / "000.png")
-    _write_image(root / "test" / "broken" / "000.png")
-    _write_mask(root / "ground_truth" / "broken" / "000_mask.png")
+    _write_image(root / "train" / "good" / "train.png")
+    _write_image(root / "val" / "good" / "val-good.png")
+    _write_image(root / "val" / "bad" / "val-bad.jpg")
+    _write_image(root / "test" / "good" / "test-good.png")
+    _write_image(root / "test" / "bad" / "test-bad.webp")
+    _write_mask(root / "ground_truth" / "val" / "bad" / "val-bad.png")
+    _write_mask(root / "ground_truth" / "test" / "bad" / "test-bad.png")
 
 
-def test_verify_anomalib_accepts_complete_mvtec_structure(tmp_path: Path) -> None:
+def test_verify_anomalib_accepts_only_complete_training_structure(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
@@ -788,7 +791,7 @@ def test_anomalib_scan_failure_preserves_canonical_binary_taxonomy(
     assert result["errors"][0]["code"] == "invalid_image"
 
 
-def test_verify_anomalib_ignores_hidden_client_state_defect_directory(tmp_path: Path) -> None:
+def test_verify_anomalib_ignores_hidden_client_state_directory(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
     _write_image(tmp_path / "test" / ".avia" / "hidden.png")
 
@@ -808,20 +811,24 @@ def test_verify_anomalib_accepts_explicit_provenance_documents(tmp_path: Path) -
     assert result["status"] == "ok"
 
 
-def test_verify_anomalib_accepts_generic_bad_mask_with_same_stem(tmp_path: Path) -> None:
-    _write_image(tmp_path / "train" / "good" / "000.png")
-    _write_image(tmp_path / "test" / "good" / "000.png")
-    _write_image(tmp_path / "test" / "bad" / "000.png")
-    _write_mask(tmp_path / "ground_truth" / "bad" / "000.png")
+def test_verify_anomalib_rejects_document_not_owned_by_training_profile(
+    tmp_path: Path,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "SOURCES.md").write_text("parallel provenance contract\n", encoding="utf-8")
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
-    assert result["status"] == "ok"
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "unexpected_anomalib_member" and item.get("path") == "SOURCES.md"
+        for item in result["errors"]
+    )
 
 
 def test_verify_anomalib_rejects_missing_bad_mask(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
-    (tmp_path / "ground_truth" / "broken" / "000_mask.png").unlink()
+    (tmp_path / "ground_truth" / "val" / "bad" / "val-bad.png").unlink()
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
@@ -831,7 +838,10 @@ def test_verify_anomalib_rejects_missing_bad_mask(tmp_path: Path) -> None:
 
 def test_verify_anomalib_rejects_mismatched_mask_dimensions(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
-    _write_mask(root := tmp_path / "ground_truth" / "broken" / "000_mask.png", size=(8, 8))
+    _write_mask(
+        root := tmp_path / "ground_truth" / "test" / "bad" / "test-bad.png",
+        size=(8, 8),
+    )
     assert root.exists()
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
@@ -842,7 +852,7 @@ def test_verify_anomalib_rejects_mismatched_mask_dimensions(tmp_path: Path) -> N
 
 def test_verify_anomalib_rejects_orphan_mask(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
-    _write_mask(tmp_path / "ground_truth" / "broken" / "orphan_mask.png")
+    _write_mask(tmp_path / "ground_truth" / "test" / "bad" / "orphan.png")
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
@@ -850,22 +860,106 @@ def test_verify_anomalib_rejects_orphan_mask(tmp_path: Path) -> None:
     assert any(error["code"] == "orphan_anomaly_mask" for error in result["errors"])
 
 
-def test_verify_anomalib_rejects_images_outside_exact_split_roles(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "train/bad/unexpected.png",
+        "validation/good/unexpected.png",
+        "validation/bad/unexpected.png",
+        "test/crack/unexpected.png",
+        "ground_truth/crack/unexpected_mask.png",
+        "ground_truth/test/bad/test-bad_mask.png",
+        "ground_truth/test/bad/test-bad.PNG",
+        "test/good/nested/unexpected.png",
+        "test/bad/unsupported.bmp",
+    ],
+)
+def test_verify_anomalib_rejects_retired_or_noncanonical_layout_members(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
     _write_anomalib_dataset(tmp_path)
-    _write_image(tmp_path / "train" / "broken" / "unexpected.png")
-    _write_image(tmp_path / "validation" / "broken" / "unexpected.png")
+    _write_image(tmp_path / relative_path)
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
-    paths = {
-        item.get("path")
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "unexpected_anomalib_member" and item.get("path") == relative_path
         for item in result["errors"]
-        if item["code"] == "unexpected_anomalib_member"
-    }
-    assert paths == {
-        "train/broken/unexpected.png",
-        "validation/broken/unexpected.png",
-    }
+    )
+
+
+def test_verify_anomalib_rejects_unexpected_empty_directory(tmp_path: Path) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "validation" / "good").mkdir(parents=True)
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "unexpected_anomalib_directory" and item.get("path") == "validation/good"
+        for item in result["errors"]
+    )
+
+
+def test_verify_anomalib_reports_missing_canonical_directory(tmp_path: Path) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "val" / "good" / "val-good.png").unlink()
+    (tmp_path / "val" / "good").rmdir()
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "missing_anomalib_directory" and item.get("path") == "val/good"
+        for item in result["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "expected_split", "expected_class"),
+    [
+        ("val/good/val-good.png", "val", "good"),
+        ("val/bad/val-bad.jpg", "val", "bad"),
+        ("test/good/test-good.png", "test", "good"),
+        ("test/bad/test-bad.webp", "test", "bad"),
+    ],
+)
+def test_verify_anomalib_rejects_empty_required_evaluation_role(
+    tmp_path: Path,
+    relative_path: str,
+    expected_split: str,
+    expected_class: str,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / relative_path).unlink()
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "empty_anomalib_role"
+        and item.get("split") == expected_split
+        and item.get("class_name") == expected_class
+        for item in result["errors"]
+    )
+
+
+def test_verify_anomalib_rejects_duplicate_source_stems(tmp_path: Path) -> None:
+    _write_anomalib_dataset(tmp_path)
+    _write_image(tmp_path / "val" / "bad" / "val-bad.webp")
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "duplicate_anomalib_source_stem"
+        and item.get("split") == "val"
+        and item.get("class_name") == "bad"
+        and item.get("stem") == "val-bad"
+        for item in result["errors"]
+    )
 
 
 def test_verify_anomalib_rejects_malformed_image(tmp_path: Path) -> None:
@@ -881,7 +975,7 @@ def test_verify_anomalib_rejects_malformed_image(tmp_path: Path) -> None:
 def test_verify_anomalib_rejects_rgb_mask(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
     Image.new("RGB", (16, 12), color=(255, 0, 0)).save(
-        tmp_path / "ground_truth" / "broken" / "000_mask.png"
+        tmp_path / "ground_truth" / "val" / "bad" / "val-bad.png"
     )
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")

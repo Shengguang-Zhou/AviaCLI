@@ -597,19 +597,20 @@ def test_folder_upload_persists_pending_uuid_session_before_first_post_and_resum
 def test_anomalib_folder_upload_uses_binary_taxonomy_in_session_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "mvtec-bottle"
+    source = tmp_path / "canonical-ad"
     for relative in (
-        "train/good/000.png",
-        "test/good/000.png",
-        "test/broken_large/000.png",
-        "test/broken_small/001.png",
+        "train/good/train.png",
+        "val/good/val-good.png",
+        "val/bad/val-bad.png",
+        "test/good/test-good.png",
+        "test/bad/test-bad.png",
     ):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (16, 12)).save(path)
     for relative in (
-        "ground_truth/broken_large/000_mask.png",
-        "ground_truth/broken_small/001_mask.png",
+        "ground_truth/val/bad/val-bad.png",
+        "ground_truth/test/bad/test-bad.png",
     ):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
