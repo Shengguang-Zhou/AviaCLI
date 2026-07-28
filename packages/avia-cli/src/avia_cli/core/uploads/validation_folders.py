@@ -26,16 +26,7 @@ _ANOMALIB_ROLES = (
     ("test", "bad"),
 )
 _ANOMALIB_EVALUATION_SPLITS = ("val", "test")
-_ANOMALIB_DOCUMENT_NAMES = frozenset(
-    {
-        "license",
-        "license.txt",
-        "readme",
-        "readme.md",
-        "readme.txt",
-        "source_records.json",
-    }
-)
+_ANOMALIB_ROOT_DOCUMENT_NAMES = frozenset({"README", "LICENSE", "source_records.json"})
 _ANOMALIB_DIRECTORIES = frozenset(
     {"ground_truth"}
     | {split for split, _class_name in _ANOMALIB_ROLES}
@@ -248,7 +239,7 @@ def _anomalib_mask_images(root: Path) -> list[Path]:
 
 
 def _is_anomalib_document_path(relative_path: str) -> bool:
-    return "/" not in relative_path and relative_path.lower() in _ANOMALIB_DOCUMENT_NAMES
+    return "/" not in relative_path and relative_path in _ANOMALIB_ROOT_DOCUMENT_NAMES
 
 
 def _validate_anomalib_source_stems(

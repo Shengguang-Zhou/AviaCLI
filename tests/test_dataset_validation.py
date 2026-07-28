@@ -801,27 +801,44 @@ def test_verify_anomalib_ignores_hidden_client_state_directory(tmp_path: Path) -
     assert result["classes"] == ["good", "bad"]
 
 
-def test_verify_anomalib_accepts_explicit_provenance_documents(tmp_path: Path) -> None:
+@pytest.mark.parametrize("filename", ["README", "LICENSE", "source_records.json"])
+def test_verify_anomalib_accepts_exact_provenance_document_names(
+    tmp_path: Path,
+    filename: str,
+) -> None:
     _write_anomalib_dataset(tmp_path)
-    (tmp_path / "license.txt").write_text("MVTec license\n", encoding="utf-8")
-    (tmp_path / "source_records.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / filename).write_text("{}\n", encoding="utf-8")
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
     assert result["status"] == "ok"
 
 
-def test_verify_anomalib_rejects_document_not_owned_by_training_profile(
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "README.txt",
+        "README.md",
+        "readme",
+        "license.txt",
+        "LICENSE.txt",
+        "SOURCE_RECORDS.JSON",
+        "notes.txt",
+        "provenance.json",
+    ],
+)
+def test_verify_anomalib_rejects_noncanonical_provenance_document_names(
     tmp_path: Path,
+    filename: str,
 ) -> None:
     _write_anomalib_dataset(tmp_path)
-    (tmp_path / "SOURCES.md").write_text("parallel provenance contract\n", encoding="utf-8")
+    (tmp_path / filename).write_text("{}\n", encoding="utf-8")
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
     assert result["status"] == "failed"
     assert any(
-        item["code"] == "unexpected_anomalib_member" and item.get("path") == "SOURCES.md"
+        item["code"] == "unexpected_anomalib_member" and item.get("path") == filename
         for item in result["errors"]
     )
 
