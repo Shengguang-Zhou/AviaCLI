@@ -7,7 +7,7 @@ from typing import Any
 from urllib import parse
 
 from avia_cli.core.uploads.api import _project_path, _request_json_with_retries
-from avia_cli.core.uploads.contracts import require_format_task
+from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES, require_format_task
 from avia_cli.core.uploads.manifest import _is_image_path, scan_source_manifest
 from avia_cli.core.atomic_file import read_regular_file
 from avia_cli.core.uploads.response_contracts import (
@@ -57,7 +57,7 @@ def inspect_dataset(
             "image_count": 0,
             "label_count": 0,
             "total_bytes": 0,
-            "classes": [],
+            "classes": _manifest_classes({}, format_name=format_name),
             "status": "failed",
             "error_count": 1,
             "warning_count": 0,
@@ -97,7 +97,7 @@ def verify_dataset(
             "image_count": 0,
             "label_count": 0,
             "total_bytes": 0,
-            "classes": [],
+            "classes": _manifest_classes({}, format_name=format_name),
             "status": "failed",
             "error_count": 1,
             "warning_count": 0,
@@ -191,9 +191,15 @@ def _manifest_summary(
         "total_bytes": int(manifest.get("total_bytes") or 0),
         "image_count": len(image_paths),
         "label_count": len(label_paths),
-        "classes": [str(item) for item in list(manifest.get("classes") or [])],
+        "classes": _manifest_classes(manifest, format_name=format_name),
         "sample_files": [str(item.get("relative_path") or "") for item in files[:10]],
     }
+
+
+def _manifest_classes(manifest: dict[str, object], *, format_name: str) -> list[str]:
+    if format_name == "anomalib":
+        return list(ANOMALIB_CLASSES)
+    return [str(item) for item in list(manifest.get("classes") or [])]
 
 
 def _list_server_imports(

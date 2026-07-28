@@ -5,6 +5,7 @@ from typing import Any
 
 from PIL import Image
 
+from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES
 from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
 from avia_cli.core.uploads.validation_common import (
     dataset_role_directories,
@@ -182,7 +183,7 @@ def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]
         code="unexpected_anomalib_member",
         errors=errors,
     )
-    return ["good", *sorted({defect for defect, _sample in bad_samples})], errors
+    return list(ANOMALIB_CLASSES), errors
 
 
 def _validate_images(

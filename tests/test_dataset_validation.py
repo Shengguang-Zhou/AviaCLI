@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ import yaml
 from PIL import Image
 from pycocotools import mask as mask_utils
 
-from avia_cli.core.uploads.inspect import verify_dataset
+from avia_cli.core.uploads.inspect import inspect_dataset, verify_dataset
 from avia_cli.core.uploads.manifest import scan_source_manifest
 from avia_cli.core.uploads.validation import require_valid_dataset
 
@@ -761,7 +762,30 @@ def test_verify_anomalib_accepts_complete_mvtec_structure(tmp_path: Path) -> Non
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
     assert result["status"] == "ok"
+    assert result["classes"] == ["good", "bad"]
     assert result["warning_count"] == 0
+
+
+def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> None:
+    _write_anomalib_dataset(tmp_path)
+
+    result = inspect_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["classes"] == ["good", "bad"]
+
+
+@pytest.mark.parametrize("inspect", [inspect_dataset, verify_dataset])
+def test_anomalib_scan_failure_preserves_canonical_binary_taxonomy(
+    tmp_path: Path, inspect: Callable[..., dict[str, object]]
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "train" / "good" / "000.png").write_bytes(b"not-an-image")
+
+    result = inspect(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert result["classes"] == ["good", "bad"]
+    assert result["errors"][0]["code"] == "invalid_image"
 
 
 def test_verify_anomalib_ignores_hidden_client_state_defect_directory(tmp_path: Path) -> None:
@@ -771,7 +795,7 @@ def test_verify_anomalib_ignores_hidden_client_state_defect_directory(tmp_path: 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
     assert result["status"] == "ok"
-    assert result["classes"] == ["good", "broken"]
+    assert result["classes"] == ["good", "bad"]
 
 
 def test_verify_anomalib_accepts_explicit_provenance_documents(tmp_path: Path) -> None:

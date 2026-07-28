@@ -18,6 +18,8 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   validation also compares decoded dimensions with manifest dimensions when present.
 - Anomalib masks use Pillow's non-deprecated `get_flattened_data()` API, so the package requires
   Pillow 12.1 or newer; dependency metadata must not claim support for an older Pillow ABI.
+- Anomalib defect directory names describe defect provenance, not product classes. Validation,
+  inspection, and folder-session payloads always expose the exact AD taxonomy `["good", "bad"]`.
 - The published package supports Python 3.10 through 3.12. The workspace, wheel metadata, NumPy
   1.x dependency, lock file, classifiers, internal CI, and release workflow must enforce that one
   range. Quality runs on all three interpreters; release artifacts are built and published once.

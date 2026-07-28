@@ -8,6 +8,7 @@ FORMAT_TASKS: dict[str, frozenset[str]] = {
     "imagenet": frozenset({"classify"}),
     "anomalib": frozenset({"ad"}),
 }
+ANOMALIB_CLASSES = ("good", "bad")
 
 
 def require_format_task(*, format_name: str, task_key: str) -> tuple[str, str]:

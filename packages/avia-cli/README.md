@@ -113,7 +113,9 @@ official training data.
 Classification label files contain one unique class id per row. Anomalib
 validation requires `train/good`, a good evaluation split, named bad test
 samples, and one same-sized `ground_truth` mask per bad sample. Validation
-errors exit non-zero; missing labels or unknown classes are never warnings.
+reports the exact binary class taxonomy `["good", "bad"]`; MVTec defect
+directory names remain sample provenance and never become product classes.
+Validation errors exit non-zero; missing labels or unknown classes are never warnings.
 For multilabel classification, an existing empty label file is an explicit
 negative sample; an absent label file remains an error.
 
