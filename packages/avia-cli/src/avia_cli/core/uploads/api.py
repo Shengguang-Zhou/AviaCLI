@@ -26,6 +26,7 @@ from avia_cli.core.uploads.response_contracts import (
     decode_complete_import_response,
     decode_dataset_session_response,
     decode_import_job_response,
+    validate_batch_upload_urls_request,
 )
 from avia_cli.core.uploads.state import _ensure_sha256_batch as _support_ensure_sha256_batch
 from avia_cli.core.uploads.source_file import SourceIdentity, VerifiedSourceFile
@@ -173,7 +174,8 @@ def _batch_upload_urls(
     timeout: int | float = 60,
     retries: int = 3,
 ) -> dict[str, Any]:
-    payload = {"files": files}
+    validate_batch_upload_urls_request(files)
+    payload = {"files": [dict(item) for item in files]}
     response = _request_json_with_retries(
         method="POST",
         url=_project_path(

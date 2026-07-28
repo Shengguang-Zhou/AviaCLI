@@ -51,11 +51,15 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 - Folder PUTs use one exact, case-insensitive header contract. Never retry invalid URLs, headers,
   source identities, or programmer errors. Retry only the typed transport
   error and HTTP 408/429/500/502/503/504 responses.
+- Folder signing requests contain only `relative_path`, `size_bytes`, and lowercase SHA-256.
+  Content type is server-owned canonical metadata: the client validates the signed response and
+  exact `Content-Type` header, persists only that server value after a successful PUT, and reuses
+  it for batch completion. Browser/host MIME guesses, dimensions, and completion metadata must
+  never be echoed into the signing request or substituted during resume.
 - A failed concurrent PUT or batch-complete request must not return while sibling operations are
   still running. Drain them, persist every completed side effect to resume state, expose all
   additional failures, then raise one structured aggregate error.
-- Folder sessions are the only dataset-byte upload protocol. The non-idempotent archive path and
-  its multipart implementation are removed rather than retained as historical compatibility code.
+- Folder sessions are the only dataset-byte upload protocol.
 - API bases, server response fields, import identifiers, remote object identities, and import
   statuses have one canonical contract. Reject unknown fields, duplicate/missing signed entries,
   mismatches, redirects, and historical status aliases.

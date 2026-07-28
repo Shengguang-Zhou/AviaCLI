@@ -86,8 +86,7 @@ avia import create \
 Validation fully decodes every image and rejects all symbolic links in the source tree, including
 broken links and linked directories. The shared scanner also rejects FIFOs, sockets, devices, and
 every other non-regular member instead of silently omitting it. Inspection, verification, and
-upload always process the complete dataset. The historical archive-upload path was removed:
-folder sessions are the one durable, idempotent upload protocol.
+upload always process the complete dataset through folder sessions.
 
 After validation, each upload is bound to the same regular-file identity used to compute its
 SHA-256 and dimensions. Hashing and PUT retries use an `O_NOFOLLOW`

@@ -7,7 +7,11 @@ from typing import Any
 from PIL import Image
 
 from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES
-from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
+from avia_cli.core.uploads.manifest import (
+    DATASET_IMAGE_SUFFIXES,
+    _is_image_path,
+    is_client_state_path,
+)
 from avia_cli.core.uploads.validation_common import (
     dataset_role_directories,
     error,
@@ -17,7 +21,6 @@ from avia_cli.core.uploads.validation_common import (
     is_document_path,
 )
 
-_ANOMALIB_SOURCE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 _ANOMALIB_ROLES = (
     ("train", "good"),
     ("val", "good"),
@@ -228,7 +231,7 @@ def _anomalib_source_images(root: Path) -> list[Path]:
     return sorted(
         path
         for path in root.iterdir()
-        if path.is_file() and path.suffix.lower() in _ANOMALIB_SOURCE_SUFFIXES
+        if path.is_file() and path.suffix.lower() in DATASET_IMAGE_SUFFIXES
     )
 
 

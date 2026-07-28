@@ -60,8 +60,10 @@ def _source_import_contract(
             "file_count": 3,
             "total_bytes": 123,
             "manifest_object_key": "workspaces/ws_123/imports/imp_123/manifest.json",
-            "source_owned": False,
-            "all_referenced_existing": False,
+            "source_version_id": "version-123",
+            "source_bucket": "datasets",
+            "source_etag": "etag-123",
+            "source_size_bytes": 456,
             "phase": "uploaded",
         },
     }
@@ -82,6 +84,31 @@ def test_source_import_rejects_class_override_for_non_yolo_format() -> None:
 
     with pytest.raises(RuntimeError, match="classes are only valid for yolo"):
         validate_source_import_request(request_payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_version_id", ""),
+        ("source_bucket", ""),
+        ("source_etag", ""),
+        ("source_size_bytes", 0),
+    ],
+)
+def test_source_import_response_requires_immutable_manifest_identity(
+    field: str,
+    value: object,
+) -> None:
+    request_payload, response = _source_import_contract(auto_post_processing=False)
+    progress = dict(response["progress"])
+    progress[field] = value
+
+    with pytest.raises(RuntimeError, match=field):
+        decode_source_import_response(
+            {**response, "progress": progress},
+            project_id=PROJECT_ID,
+            request_payload=request_payload,
+        )
 
 
 @pytest.mark.parametrize(
@@ -219,12 +246,12 @@ def test_batch_upload_decoder_rejects_duplicate_extra_missing_and_identity_drift
         {
             "relative_path": "images/train/a.png",
             "size_bytes": 12,
-            "content_type": "image/png",
             "sha256": "a" * 64,
         }
     ]
     item = {
         **requested[0],
+        "content_type": "image/png",
         "object_key": "objects/a.png",
         "upload_url": "https://storage.example/a?signature=secret",
         "required_headers": {"Content-Type": "image/png"},
@@ -253,6 +280,62 @@ def test_batch_upload_decoder_rejects_duplicate_extra_missing_and_identity_drift
                 import_id=IMPORT_ID,
                 requested_files=requested,
             )
+
+
+def test_batch_upload_decoder_treats_content_type_as_server_owned() -> None:
+    requested = [
+        {
+            "relative_path": "metadata/data.yaml",
+            "size_bytes": 12,
+            "sha256": "b" * 64,
+        }
+    ]
+    item = {
+        **requested[0],
+        "content_type": "application/yaml",
+        "object_key": "objects/data.yaml",
+        "upload_url": "https://storage.example/data?signature=secret",
+        "required_headers": {"Content-Type": "application/yaml"},
+        "expires_in": 900,
+    }
+    payload = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "files": [item],
+    }
+
+    assert (
+        decode_batch_upload_urls_response(
+            payload,
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            requested_files=requested,
+        )
+        is payload
+    )
+    with pytest.raises(RuntimeError, match="Content-Type"):
+        decode_batch_upload_urls_response(
+            {
+                **payload,
+                "files": [
+                    {
+                        **item,
+                        "required_headers": {"Content-Type": "text/yaml"},
+                    }
+                ],
+            },
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            requested_files=requested,
+        )
+    with pytest.raises(RuntimeError, match="request file fields must be exact"):
+        decode_batch_upload_urls_response(
+            payload,
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            requested_files=[{**requested[0], "content_type": "text/yaml"}],
+        )
 
 
 def test_batch_complete_decoder_requires_proof_of_exact_accepted_batch() -> None:

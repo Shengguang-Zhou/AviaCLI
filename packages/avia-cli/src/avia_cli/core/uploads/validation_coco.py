@@ -18,7 +18,7 @@ from avia_cli.core.uploads.validation_common import (
     json_finite_numbers,
 )
 
-CocoImageIndex: TypeAlias = tuple[dict[str, Path], dict[str, list[tuple[str, Path]]]]
+CocoImageIndex: TypeAlias = dict[str, Path]
 Taxonomy: TypeAlias = tuple[tuple[object, ...], ...]
 
 
@@ -54,7 +54,7 @@ def validate_coco(*, source_root: Path, task_key: str) -> tuple[list[str], list[
                 )
             )
 
-    all_images = set(image_index[0])
+    all_images = set(image_index)
     for relative in sorted(all_images - set(referenced_images)):
         errors.append(
             error(
@@ -330,9 +330,7 @@ def _images(
         except (OSError, ValueError) as exc:
             errors.append(error("invalid_image", str(exc), file_name=file_name, **location))
             continue
-        resolved_relative = next(
-            key for key, value in image_index[0].items() if value == image_path
-        )
+        resolved_relative = next(key for key, value in image_index.items() if value == image_path)
         previous = referenced_images.get(resolved_relative)
         if previous is not None:
             errors.append(
@@ -374,7 +372,6 @@ def _canonical_coco_path(value: str) -> bool:
 
 def _build_image_index(source_root: Path) -> CocoImageIndex:
     by_relative: dict[str, Path] = {}
-    by_name: dict[str, list[tuple[str, Path]]] = {}
     for path in sorted(source_root.rglob("*")):
         if (
             not path.is_file()
@@ -384,24 +381,15 @@ def _build_image_index(source_root: Path) -> CocoImageIndex:
             continue
         relative = path.relative_to(source_root).as_posix()
         by_relative[relative] = path
-        by_name.setdefault(path.name, []).append((relative, path))
-    return by_relative, by_name
+    return by_relative
 
 
 def _resolve_image_path(image_index: CocoImageIndex, relative: Path) -> Path:
-    by_relative, by_name = image_index
     suffix = relative.as_posix()
-    direct = by_relative.get(suffix)
+    direct = image_index.get(suffix)
     if direct is not None:
         return direct
-    candidates = [
-        path for indexed, path in by_name.get(relative.name, []) if indexed.endswith(f"/{suffix}")
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    if not candidates:
-        raise ValueError(f"COCO image file does not exist: {suffix}")
-    raise ValueError(f"COCO image file_name is ambiguous: {suffix}")
+    raise ValueError(f"COCO image file does not exist at exact path: {suffix}")
 
 
 def _validate_bbox(

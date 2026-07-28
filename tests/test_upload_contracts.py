@@ -34,7 +34,7 @@ def _write_state(
     path.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "api": "https://avia.eurekailab.com/api/v1",
                 "phase": "uploading",
                 "project_id": project_id,
@@ -61,6 +61,7 @@ def _write_state(
                         "sha256": "",
                         "width": 0,
                         "height": 0,
+                        "content_type": None,
                         "object_key": None,
                         "source_identity": {
                             "device": 1,
@@ -594,6 +595,124 @@ def test_folder_upload_persists_pending_uuid_session_before_first_post_and_resum
     assert seen_payloads == [first_payload, first_payload]
 
 
+def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "dataset"
+    image = source / "images" / "train" / "sample.png"
+    image.parent.mkdir(parents=True)
+    Image.new("RGB", (16, 12)).save(image)
+    label = source / "labels" / "train" / "sample.txt"
+    label.parent.mkdir(parents=True)
+    label.write_text("0 0.5 0.5 0.25 0.25\n", encoding="utf-8")
+    (source / "classes.txt").write_text("aircraft\n", encoding="utf-8")
+    state_dir = tmp_path / "state"
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            str(source),
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+            "--concurrency",
+            "1",
+            "--batch-size",
+            "100",
+            "--hash-workers",
+            "1",
+            "--batch-complete-concurrency",
+            "1",
+            "--stream-flush-size",
+            "100",
+            "--state-dir",
+            str(state_dir),
+        ]
+    )
+    server_content_types: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset._create_dataset_session",
+        lambda **_kwargs: {"import_id": "imp_server_mime"},
+    )
+
+    def sign(**kwargs: object) -> dict[str, object]:
+        requested = kwargs["files"]
+        assert isinstance(requested, list)
+        assert all(set(item) == {"relative_path", "size_bytes", "sha256"} for item in requested)
+        signed_files = []
+        for index, item in enumerate(requested):
+            relative_path = str(item["relative_path"])
+            content_type = f"application/x-server-{index}"
+            server_content_types[relative_path] = content_type
+            signed_files.append(
+                {
+                    **item,
+                    "content_type": content_type,
+                    "object_key": f"objects/{relative_path}",
+                    "upload_url": f"https://objects.example/{relative_path}",
+                    "required_headers": {"Content-Type": content_type},
+                    "expires_in": 900,
+                }
+            )
+        return {"files": signed_files}
+
+    completed_files: list[dict[str, object]] = []
+
+    def complete_batch(**kwargs: object) -> dict[str, object]:
+        files = kwargs["files"]
+        assert isinstance(files, list)
+        completed_files.extend(dict(item) for item in files)
+        return {"accepted": len(files)}
+
+    monkeypatch.setattr("avia_cli.core.uploads.dataset._batch_upload_urls", sign)
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset._resolve_transport_concurrency",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset._put_file_with_retries",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset._complete_dataset_file_batch",
+        complete_batch,
+    )
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset._complete_import",
+        lambda **_kwargs: {
+            "workspace_id": "ws_123",
+            "project_id": "proj_123456789abc",
+            "import_id": "imp_server_mime",
+            "status": "queued",
+            "dataset_manifest_ref": {"id": "dm_123"},
+            "read_lease": {"id": "lease_123"},
+            "reason": "queued",
+            "dispatch_mode": "celery",
+            "worker_task_id": "task_123",
+            "dataset_version_id": "dv_123",
+            "version_ref": {"dataset_version_id": "dv_123"},
+        },
+    )
+
+    upload_dataset(args, api="https://avia.example/api/v1", token="token")
+
+    assert {
+        str(item["relative_path"]): str(item["content_type"]) for item in completed_files
+    } == server_content_types
+    state_path = next(state_dir.rglob("*.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["schema_version"] == 4
+    assert {
+        path: item["content_type"] for path, item in state["files"].items()
+    } == server_content_types
+
+
 def test_anomalib_folder_upload_uses_binary_taxonomy_in_session_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -720,9 +839,10 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
             "files": [
                 {
                     "relative_path": item["relative_path"],
+                    "content_type": "application/octet-stream",
                     "upload_url": f"https://objects.example/{item['relative_path']}",
                     "object_key": f"objects/{item['relative_path']}",
-                    "required_headers": {},
+                    "required_headers": {"Content-Type": "application/octet-stream"},
                 }
                 for item in kwargs["files"]
             ]
@@ -816,9 +936,10 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
             "files": [
                 {
                     "relative_path": item["relative_path"],
+                    "content_type": "application/octet-stream",
                     "upload_url": f"https://objects.example/{item['relative_path']}",
                     "object_key": f"objects/{item['relative_path']}",
-                    "required_headers": {},
+                    "required_headers": {"Content-Type": "application/octet-stream"},
                 }
                 for item in kwargs["files"]
             ]
@@ -969,8 +1090,3 @@ def test_folder_upload_emits_and_returns_segment_topology_warnings(
     event = json.loads(capsys.readouterr().err)
     assert event["event"] == "dataset_validation_warnings"
     assert event["warnings"] == result["validation_warnings"]
-
-
-def test_archive_upload_command_is_removed() -> None:
-    with pytest.raises(SystemExit):
-        _build_parser().parse_args(["dataset", "upload-archive"])

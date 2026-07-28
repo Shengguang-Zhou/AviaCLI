@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import mimetypes
 import unicodedata
 from pathlib import Path
 
@@ -15,19 +14,11 @@ class ManifestImageError(RuntimeError):
         super().__init__(detail)
 
 
-def _guess_content_type(path: str) -> str:
-    content_type, _encoding = mimetypes.guess_type(path)
-    return content_type or "application/octet-stream"
+DATASET_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
 
 
 def _is_image_path(path: str) -> bool:
-    return Path(str(path or "")).suffix.lower() in {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".bmp",
-        ".webp",
-    }
+    return Path(str(path or "")).suffix.lower() in DATASET_IMAGE_SUFFIXES
 
 
 def is_client_state_path(relative_path: Path) -> bool:
@@ -60,7 +51,6 @@ def _manifest_item(
     item: dict[str, object] = {
         "relative_path": relative_path,
         "size_bytes": int(path.stat().st_size),
-        "content_type": _guess_content_type(relative_path),
     }
     if _is_image_path(relative_path):
         try:
@@ -167,6 +157,7 @@ def _raise_manifest_error(code: str, message: str, *, path: str) -> None:
 def _canonical_relative_path(relative: Path) -> str:
     raw = relative.as_posix()
     normalized = unicodedata.normalize("NFC", raw)
+    suffix = relative.suffix
     invalid = (
         not raw
         or raw != normalized
@@ -175,6 +166,7 @@ def _canonical_relative_path(relative: Path) -> str:
         or raw.startswith("/")
         or any(part in {"", ".", ".."} or part != part.strip() for part in raw.split("/"))
         or any(unicodedata.category(character) == "Cc" for character in raw)
+        or (_is_image_path(raw) and suffix != suffix.lower())
     )
     if invalid:
         _raise_manifest_error(

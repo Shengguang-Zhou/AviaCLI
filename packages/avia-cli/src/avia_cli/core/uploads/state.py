@@ -47,6 +47,7 @@ _STATE_FIELDS = {
     "task_key",
 }
 _STATE_FILE_FIELDS = {
+    "content_type",
     "height",
     "object_key",
     "sha256",
@@ -338,8 +339,8 @@ def _load_resume_state(
 def _validate_state(state: dict[str, Any], *, path: Path) -> None:
     if set(state) != _STATE_FIELDS:
         raise ValueError("state fields must be exact")
-    if state.get("schema_version") != 3:
-        raise ValueError("state schema_version must be 3")
+    if state.get("schema_version") != 4:
+        raise ValueError("state schema_version must be 4")
     phase = state.get("phase")
     if phase not in {"session_pending", "uploading", "completed"}:
         raise ValueError("state phase is invalid")
@@ -422,6 +423,15 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
             not isinstance(raw.get("object_key"), str) or not raw.get("object_key")
         ):
             raise ValueError(f"state file object_key is invalid: {relative_path}")
+        content_type = raw.get("content_type")
+        if content_type is not None and (
+            not isinstance(content_type, str)
+            or not content_type
+            or content_type != content_type.strip().lower()
+            or "/" not in content_type
+            or ";" in content_type
+        ):
+            raise ValueError(f"state file content_type is invalid: {relative_path}")
         identity = raw.get("source_identity")
         if not isinstance(identity, dict) or set(identity) != {
             "device",
@@ -438,8 +448,12 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
             raise ValueError(f"state file source_identity values are invalid: {relative_path}")
         if identity["size_bytes"] != raw["size_bytes"]:
             raise ValueError(f"state file source identity size mismatch: {relative_path}")
-        if raw["uploaded"] and (not sha256 or raw.get("object_key") is None):
+        if raw["uploaded"] and (
+            not sha256 or raw.get("object_key") is None or content_type is None
+        ):
             raise ValueError(f"uploaded state file lacks remote identity: {relative_path}")
+        if not raw["uploaded"] and (raw.get("object_key") is not None or content_type is not None):
+            raise ValueError(f"non-uploaded state file has remote identity: {relative_path}")
 
 
 def _require_idempotency_key(value: object) -> str:

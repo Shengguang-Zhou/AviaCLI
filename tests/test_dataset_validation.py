@@ -78,6 +78,22 @@ def test_verify_yolo_accepts_exact_valid_task_rows(
     assert result["warning_count"] == 0
 
 
+def test_verify_yolo_accepts_tiff_images(tmp_path: Path) -> None:
+    _write_image(tmp_path / "images" / "train" / "sample.tiff")
+    label_path = tmp_path / "labels" / "train" / "sample.txt"
+    label_path.parent.mkdir(parents=True, exist_ok=True)
+    label_path.write_text("0 0.5 0.5 0.25 0.25\n", encoding="utf-8")
+    (tmp_path / "data.yaml").write_text("names: [aircraft]\n", encoding="utf-8")
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+    tiff_item = next(item for item in manifest["files"] if item["relative_path"].endswith(".tiff"))
+    assert (tiff_item["width"], tiff_item["height"]) == (16, 12)
+    assert "content_type" not in tiff_item
+
+
 def test_verify_yolo_pose_uses_exact_kpt_shape(tmp_path: Path) -> None:
     _write_yolo_dataset(
         tmp_path,
@@ -490,7 +506,7 @@ def test_verify_coco_rejects_control_characters_in_file_name(tmp_path: Path) -> 
     assert any(item["code"] == "invalid_coco_file_name" for item in result["errors"])
 
 
-def test_verify_coco_resolves_standard_split_directory_file_names(tmp_path: Path) -> None:
+def test_verify_coco_rejects_basename_lookup_across_split_directories(tmp_path: Path) -> None:
     _write_coco_dataset(tmp_path, task_key="detect")
     (tmp_path / "images").rename(tmp_path / "train2017")
     annotation_path = tmp_path / "annotations" / "instances.json"
@@ -500,7 +516,15 @@ def test_verify_coco_resolves_standard_split_directory_file_names(tmp_path: Path
 
     result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
 
-    assert result["status"] == "ok"
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "invalid_image" and item["file_name"] == "sample.png"
+        for item in result["errors"]
+    )
+    assert any(
+        item["code"] == "orphan_coco_image" and item["path"] == "train2017/sample.png"
+        for item in result["errors"]
+    )
 
 
 def test_verify_coco_does_not_resolve_images_from_hidden_client_state(tmp_path: Path) -> None:
@@ -769,6 +793,16 @@ def test_verify_anomalib_accepts_only_complete_training_structure(tmp_path: Path
     assert result["warning_count"] == 0
 
 
+def test_verify_anomalib_accepts_tiff_source_images(tmp_path: Path) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "val" / "bad" / "val-bad.jpg").unlink()
+    _write_image(tmp_path / "val" / "bad" / "val-bad.tif")
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "ok"
+
+
 def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
 
@@ -886,9 +920,8 @@ def test_verify_anomalib_rejects_orphan_mask(tmp_path: Path) -> None:
         "test/crack/unexpected.png",
         "ground_truth/crack/unexpected_mask.png",
         "ground_truth/test/bad/test-bad_mask.png",
-        "ground_truth/test/bad/test-bad.PNG",
         "test/good/nested/unexpected.png",
-        "test/bad/unsupported.bmp",
+        "test/bad/unsupported.gif",
     ],
 )
 def test_verify_anomalib_rejects_retired_or_noncanonical_layout_members(
@@ -905,6 +938,17 @@ def test_verify_anomalib_rejects_retired_or_noncanonical_layout_members(
         item["code"] == "unexpected_anomalib_member" and item.get("path") == relative_path
         for item in result["errors"]
     )
+
+
+def test_verify_anomalib_rejects_uppercase_image_suffix_before_validation(
+    tmp_path: Path,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    path = "ground_truth/test/bad/test-bad.PNG"
+    _write_image(tmp_path / path)
+
+    with pytest.raises(SystemExit, match='"code": "invalid_dataset_path"'):
+        verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
 
 def test_verify_anomalib_rejects_unexpected_empty_directory(tmp_path: Path) -> None:

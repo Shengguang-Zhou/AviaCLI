@@ -110,10 +110,20 @@ def is_document_path(relative_path: str) -> bool:
 def is_cache_path(relative_path: str) -> bool:
     parts = Path(relative_path).parts
     return any(
-        part in {"__pycache__", ".cache", ".pytest_cache"}
+        part.lower()
+        in {
+            ".avia",
+            ".cache",
+            ".git",
+            ".ipynb_checkpoints",
+            ".pytest_cache",
+            "__macosx",
+            "__pycache__",
+            "node_modules",
+        }
         or part.endswith((".cache", ".pyc", ".tmp", "~"))
         for part in parts
-    )
+    ) or parts[-1].lower() in {".ds_store", "thumbs.db"}
 
 
 Point = tuple[float, float]

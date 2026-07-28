@@ -9,15 +9,17 @@ IMPORT_TERMINAL_STATUSES = frozenset({"succeeded", "failed"})
 IMPORT_STATUSES = IMPORT_ACTIVE_STATUSES | IMPORT_TERMINAL_STATUSES
 
 _SOURCE_IMPORT_PROGRESS_FIELDS = {
-    "all_referenced_existing",
     "classes",
     "file_count",
     "format",
     "manifest_object_key",
     "phase",
+    "source_bucket",
+    "source_etag",
     "source_kind",
-    "source_owned",
+    "source_size_bytes",
     "source_uri",
+    "source_version_id",
     "task_key",
     "total_bytes",
 }
@@ -28,6 +30,11 @@ _SOURCE_IMPORT_REQUEST_FIELDS = {
     "source_kind",
     "task_key",
     "uri",
+}
+_BATCH_UPLOAD_URL_REQUEST_FILE_FIELDS = {
+    "relative_path",
+    "sha256",
+    "size_bytes",
 }
 
 
@@ -96,10 +103,15 @@ def decode_source_import_response(
         value = progress.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise RuntimeError(f"source-import progress {key} must be a positive integer")
-    if progress.get("source_owned") is not False:
-        raise RuntimeError("object-prefix source imports must remain reference-owned")
-    if not isinstance(progress.get("all_referenced_existing"), bool):
-        raise RuntimeError("source-import progress all_referenced_existing must be boolean")
+    for key in ("source_version_id", "source_bucket", "source_etag"):
+        _require_nonempty_string(progress, key, label="source-import progress")
+    source_size_bytes = progress.get("source_size_bytes")
+    if (
+        isinstance(source_size_bytes, bool)
+        or not isinstance(source_size_bytes, int)
+        or source_size_bytes <= 0
+    ):
+        raise RuntimeError("source-import progress source_size_bytes must be a positive integer")
     if progress.get("phase") != "uploaded":
         raise RuntimeError("source-import progress phase must be uploaded")
     if auto_post_processing:
@@ -149,7 +161,7 @@ def decode_batch_upload_urls_response(
     raw_files = payload.get("files")
     if not isinstance(raw_files, list):
         raise RuntimeError("batch-upload-urls response files must be an array")
-    requested = _unique_requested_files(requested_files)
+    requested = validate_batch_upload_urls_request(requested_files)
     returned: dict[str, dict[str, Any]] = {}
     object_keys: set[str] = set()
     upload_urls: set[str] = set()
@@ -177,8 +189,15 @@ def decode_batch_upload_urls_response(
             raise RuntimeError(f"batch-upload-urls response returned unrequested {relative_path}")
         if raw.get("size_bytes") != expected.get("size_bytes"):
             raise RuntimeError(f"batch-upload-urls size mismatch for {relative_path}")
-        if raw.get("content_type") != expected.get("content_type"):
-            raise RuntimeError(f"batch-upload-urls content type mismatch for {relative_path}")
+        content_type = _require_nonempty_string(
+            raw,
+            "content_type",
+            label="batch-upload-urls file",
+        )
+        if content_type != content_type.lower() or "/" not in content_type or ";" in content_type:
+            raise RuntimeError(
+                f"batch-upload-urls content_type is not canonical for {relative_path}"
+            )
         expected_sha = str(expected.get("sha256") or "") or None
         if raw.get("sha256") != expected_sha:
             raise RuntimeError(f"batch-upload-urls sha256 mismatch for {relative_path}")
@@ -188,8 +207,11 @@ def decode_batch_upload_urls_response(
             raise RuntimeError("batch-upload-urls remote object identities must be unique")
         object_keys.add(object_key)
         upload_urls.add(upload_url)
-        if not isinstance(raw.get("required_headers"), dict):
-            raise RuntimeError("batch-upload-urls required_headers must be an object")
+        _require_signed_content_type_header(
+            raw.get("required_headers"),
+            content_type=content_type,
+            relative_path=relative_path,
+        )
         if (
             not isinstance(raw.get("expires_in"), int)
             or isinstance(raw.get("expires_in"), bool)
@@ -201,6 +223,14 @@ def decode_batch_upload_urls_response(
     if missing:
         raise RuntimeError(f"batch-upload-urls response omitted requested files: {missing[:5]}")
     return payload
+
+
+def validate_batch_upload_urls_request(
+    files: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    if not isinstance(files, list) or not 1 <= len(files) <= 1000:
+        raise RuntimeError("batch-upload-urls request files must contain 1 to 1000 items")
+    return _unique_requested_files(files)
 
 
 def decode_batch_complete_response(
@@ -337,11 +367,66 @@ def _unique_requested_files(
 ) -> dict[str, dict[str, object]]:
     result: dict[str, dict[str, object]] = {}
     for item in requested_files:
-        relative_path = str(item.get("relative_path") or "")
-        if not relative_path or relative_path in result:
+        if not isinstance(item, dict):
+            raise RuntimeError("batch-upload-urls request file must be an object")
+        _require_exact_fields(
+            item,
+            _BATCH_UPLOAD_URL_REQUEST_FILE_FIELDS,
+            label="batch-upload-urls request file",
+        )
+        relative_path = _require_nonempty_string(
+            item,
+            "relative_path",
+            label="batch-upload-urls request file",
+        )
+        if relative_path in result:
             raise RuntimeError("batch-upload-urls request paths must be unique and non-empty")
+        size_bytes = item.get("size_bytes")
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
+            raise RuntimeError(
+                f"batch-upload-urls request size_bytes is invalid for {relative_path}"
+            )
+        sha256 = item.get("sha256")
+        if (
+            not isinstance(sha256, str)
+            or len(sha256) != 64
+            or any(character not in "0123456789abcdef" for character in sha256)
+        ):
+            raise RuntimeError(f"batch-upload-urls request sha256 is invalid for {relative_path}")
         result[relative_path] = item
     return result
+
+
+def _require_signed_content_type_header(
+    value: object,
+    *,
+    content_type: str,
+    relative_path: str,
+) -> None:
+    if not isinstance(value, dict):
+        raise RuntimeError("batch-upload-urls required_headers must be an object")
+    normalized: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        if (
+            not isinstance(raw_name, str)
+            or not raw_name
+            or raw_name != raw_name.strip()
+            or not isinstance(raw_value, str)
+            or not raw_value
+            or raw_value != raw_value.strip()
+        ):
+            raise RuntimeError(
+                f"batch-upload-urls required_headers are invalid for {relative_path}"
+            )
+        name = raw_name.lower()
+        if name in normalized:
+            raise RuntimeError(f"batch-upload-urls required_headers duplicate {raw_name}")
+        normalized[name] = raw_value
+    if normalized != {"content-type": content_type}:
+        raise RuntimeError(
+            "batch-upload-urls required Content-Type header does not match "
+            f"server content_type for {relative_path}"
+        )
 
 
 def _require_identity(
