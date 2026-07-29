@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from avia_cli.core.uploads.contracts import require_format_task, require_object_prefix_uri
+from avia_cli.core.uploads.contracts import (
+    ANOMALIB_CLASSES,
+    require_format_task,
+    require_object_prefix_uri,
+)
 from avia_cli.core.uploads.media_types import require_canonical_media_type
 
 IMPORT_ACTIVE_STATUSES = frozenset({"pending_upload", "uploaded", "queued", "running"})
@@ -13,6 +17,7 @@ _SOURCE_IMPORT_PROGRESS_FIELDS = {
     "classes",
     "file_count",
     "format",
+    "image_count",
     "manifest_object_key",
     "phase",
     "source_bucket",
@@ -21,8 +26,10 @@ _SOURCE_IMPORT_PROGRESS_FIELDS = {
     "source_size_bytes",
     "source_uri",
     "source_version_id",
+    "streamed",
     "task_key",
     "total_bytes",
+    "uploaded",
 }
 _SOURCE_IMPORT_REQUEST_FIELDS = {
     "auto_post_processing",
@@ -58,8 +65,14 @@ def validate_source_import_request(payload: dict[str, object]) -> None:
         or len(set(classes)) != len(classes)
     ):
         raise RuntimeError("source-import request classes must be unique canonical strings")
-    if payload.get("format") != "yolo" and classes:
-        raise RuntimeError("source-import request classes are only valid for yolo format")
+    format_name = payload.get("format")
+    if format_name == "anomalib":
+        if classes != list(ANOMALIB_CLASSES):
+            raise RuntimeError(
+                "anomalib source-import request classes must be exactly ['good', 'bad']"
+            )
+    elif format_name != "yolo" and classes:
+        raise RuntimeError("coco and imagenet source-import request classes must be empty")
     if not isinstance(payload.get("auto_post_processing"), bool):
         raise RuntimeError("source-import request auto_post_processing must be boolean")
 
@@ -104,6 +117,16 @@ def decode_source_import_response(
         value = progress.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise RuntimeError(f"source-import progress {key} must be a positive integer")
+    for key in ("uploaded", "image_count", "streamed"):
+        value = progress.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RuntimeError(f"source-import progress {key} must be a non-negative integer")
+    if progress["uploaded"] != progress["file_count"]:
+        raise RuntimeError("source-import progress uploaded must equal file_count")
+    if progress["image_count"] != 0 or progress["streamed"] != 0:
+        raise RuntimeError(
+            "source-import progress image_count and streamed must be zero before materialization"
+        )
     for key in ("source_version_id", "source_bucket", "source_etag"):
         _require_nonempty_string(progress, key, label="source-import progress")
     source_size_bytes = progress.get("source_size_bytes")

@@ -14,7 +14,7 @@ from typing import Any, Iterable, Iterator
 from filelock import FileLock, Timeout
 
 from avia_cli.core.api_base import canonical_api_base
-from avia_cli.core.uploads.contracts import require_object_prefix_uri
+from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES, require_object_prefix_uri
 from avia_cli.core.uploads.inventory import is_dataset_image_path
 from avia_cli.core.uploads.media_types import require_canonical_media_type
 from avia_cli.core.uploads.response_contracts import validate_source_import_request
@@ -59,13 +59,15 @@ _STATE_FILE_FIELDS = {
 
 
 def _source_import_payload(args: argparse.Namespace) -> dict[str, object]:
-    classes = list(args.class_name or [])
-    if classes and str(args.format) != "yolo":
+    format_name = str(args.format)
+    requested_classes = list(args.class_name or [])
+    if requested_classes and format_name != "yolo":
         raise SystemExit("--class is only valid with --format yolo")
+    classes = list(ANOMALIB_CLASSES) if format_name == "anomalib" else requested_classes
     payload: dict[str, object] = {
         "source_kind": str(args.source_kind),
         "uri": require_object_prefix_uri(args.source),
-        "format": str(args.format),
+        "format": format_name,
         "task_key": str(args.task_key),
         "classes": classes,
         "auto_post_processing": bool(args.auto_post_processing),

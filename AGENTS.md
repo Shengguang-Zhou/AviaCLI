@@ -7,6 +7,12 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 
 - Dataset format and task are explicit and must match the exact public matrix documented in
   `README.md`; aliases and inferred defaults are invalid.
+- Object-prefix source imports use one format-bound class contract: YOLO sends the caller's
+  validated class list, Anomalib/AD automatically sends exactly `["good", "bad"]`, and
+  COCO/ImageNet send an empty list. `--class` is a YOLO-only option. The accepted source-import
+  progress is the control plane's exact pre-materialization shape, including
+  `uploaded == file_count`, `image_count == 0`, and `streamed == 0`; missing or extra counters
+  are protocol errors.
 - Folder uploads generate a canonical lowercase UUIDv4 `idempotency_key`. A versioned
   pending-session state containing the exact request payload is atomically durable before the
   first session POST. `--resume` replays that payload and key after response loss.

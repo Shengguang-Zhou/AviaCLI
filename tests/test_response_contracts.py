@@ -60,6 +60,9 @@ def _source_import_contract(
             "classes": ["person"],
             "file_count": 3,
             "total_bytes": 123,
+            "uploaded": 3,
+            "image_count": 0,
+            "streamed": 0,
             "manifest_object_key": "workspaces/ws_123/imports/imp_123/manifest.json",
             "source_version_id": "version-123",
             "source_bucket": "datasets",
@@ -79,12 +82,28 @@ def _source_import_contract(
     return request_payload, response
 
 
-def test_source_import_rejects_class_override_for_non_yolo_format() -> None:
+def test_source_import_rejects_class_override_for_imagenet() -> None:
     request_payload, _response = _source_import_contract(auto_post_processing=False)
     request_payload.update({"format": "imagenet", "task_key": "classify"})
 
-    with pytest.raises(RuntimeError, match="classes are only valid for yolo"):
+    with pytest.raises(RuntimeError, match=r"coco and imagenet.*classes must be empty"):
         validate_source_import_request(request_payload)
+
+
+def test_source_import_requires_exact_anomalib_binary_taxonomy() -> None:
+    request_payload, _response = _source_import_contract(auto_post_processing=False)
+    request_payload.update(
+        {
+            "format": "anomalib",
+            "task_key": "ad",
+            "classes": ["good", "bad"],
+        }
+    )
+
+    validate_source_import_request(request_payload)
+    for invalid in ([], ["bad", "good"], ["good"], ["good", "bad", "other"]):
+        with pytest.raises(RuntimeError, match="exactly"):
+            validate_source_import_request({**request_payload, "classes": invalid})
 
 
 @pytest.mark.parametrize(
@@ -105,6 +124,64 @@ def test_source_import_response_requires_immutable_manifest_identity(
     progress[field] = value
 
     with pytest.raises(RuntimeError, match=field):
+        decode_source_import_response(
+            {**response, "progress": progress},
+            project_id=PROJECT_ID,
+            request_payload=request_payload,
+        )
+
+
+def test_source_import_progress_matches_yolo_control_plane_exact_shape() -> None:
+    request_payload, response = _source_import_contract(auto_post_processing=False)
+    progress = response["progress"]
+
+    assert isinstance(progress, dict)
+    assert set(progress) == {
+        "source_kind",
+        "source_uri",
+        "format",
+        "task_key",
+        "classes",
+        "file_count",
+        "total_bytes",
+        "uploaded",
+        "image_count",
+        "streamed",
+        "manifest_object_key",
+        "source_version_id",
+        "source_bucket",
+        "source_etag",
+        "source_size_bytes",
+        "phase",
+    }
+    assert (
+        decode_source_import_response(
+            response,
+            project_id=PROJECT_ID,
+            request_payload=request_payload,
+        )
+        is response
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("uploaded", 2, "uploaded must equal file_count"),
+        ("image_count", 1, "image_count and streamed must be zero"),
+        ("streamed", 1, "image_count and streamed must be zero"),
+    ],
+)
+def test_source_import_progress_rejects_pre_materialization_counter_drift(
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    request_payload, response = _source_import_contract(auto_post_processing=False)
+    progress = dict(response["progress"])
+    progress[field] = value
+
+    with pytest.raises(RuntimeError, match=message):
         decode_source_import_response(
             {**response, "progress": progress},
             project_id=PROJECT_ID,

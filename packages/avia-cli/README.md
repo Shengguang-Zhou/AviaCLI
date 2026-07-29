@@ -140,6 +140,12 @@ images with the same dimensions as their defect image.
 API bases are canonical absolute `http(s)` URLs without credentials, queries, fragments,
 whitespace, default ports, or trailing slashes. Session, signed-URL, batch-complete, finalization,
 and poll responses use exact field and status decoders; historical aliases are rejected.
+Object-prefix imports bind classes to the selected format: YOLO uses the validated `--class`
+values, Anomalib/AD automatically sends the sole `["good", "bad"]` taxonomy, and COCO/ImageNet
+send no classes. `--class` is rejected for every non-YOLO format. A successful source-import
+response must carry the complete pre-materialization progress contract, including
+`uploaded == file_count`, `image_count == 0`, and `streamed == 0`; the client does not accept a
+reduced or historical response shape.
 Signed media types are exact lowercase ASCII `token/token` values without parameters,
 whitespace, controls, empty tokens, or extra slashes. Pre-publication responses cannot expose a
 dataset-version identity, while a succeeded poll requires matching `dataset_version_id` and

@@ -76,7 +76,11 @@ against one canonical contract. Transport concurrency is tuned from the validate
 not the control-plane API host.
 
 Object-prefix imports accept only a bare NFC POSIX object path with a trailing slash, validated
-before authentication or HTTP. COCO polygon and RLE masks share one strict acceptance contract:
+before authentication or HTTP. YOLO source imports send the validated caller class list,
+Anomalib/AD automatically sends exactly `["good", "bad"]`, and COCO/ImageNet send an empty list;
+`--class` is YOLO-only. Source-import success requires the control plane's complete
+pre-materialization counters (`uploaded == file_count`, `image_count == streamed == 0`) rather
+than a reduced response shape. COCO polygon and RLE masks share one strict acceptance contract:
 one connected component, no holes, and pixel-exact reconstruction from one full YOLO contour.
 YOLO segment input follows AviaTraining/Ultralytics runtime semantics: official thin-bridge
 multi-segment walks are valid, while rasterizable crossing topology is surfaced as a structured
