@@ -7,6 +7,7 @@ from typing import Iterable
 from avia_cli.core.uploads.contracts import FORMAT_TASKS
 
 DATASET_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
+_ANOMALIB_IMAGE_SUFFIXES = frozenset({".jpeg", ".jpg", ".png", ".webp"})
 
 _ANOMALIB_SOURCE_ROLES = frozenset(
     {
@@ -148,7 +149,7 @@ def _member_role(relative_path: str, *, format_name: str) -> str | None:
         if (
             len(parts) == 3
             and (parts[0], parts[1]) in _ANOMALIB_SOURCE_ROLES
-            and is_dataset_image_path(relative_path)
+            and suffix in _ANOMALIB_IMAGE_SUFFIXES
         ):
             return "image"
         if (

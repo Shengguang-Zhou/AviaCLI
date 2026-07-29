@@ -851,14 +851,23 @@ def test_non_ad_formats_keep_format_aware_inventory_counts(tmp_path: Path) -> No
         assert result["mask_count"] == 0
 
 
-def test_verify_anomalib_accepts_tiff_source_images(tmp_path: Path) -> None:
+@pytest.mark.parametrize("suffix", (".bmp", ".tif", ".tiff"))
+def test_verify_anomalib_rejects_undocumented_source_image_suffixes(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
     _write_anomalib_dataset(tmp_path)
     (tmp_path / "val" / "bad" / "val-bad.jpg").unlink()
-    _write_image(tmp_path / "val" / "bad" / "val-bad.tif")
+    relative_path = f"val/bad/val-bad{suffix}"
+    _write_image(tmp_path / relative_path)
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
-    assert result["status"] == "ok"
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "unexpected_anomalib_member" and item.get("path") == relative_path
+        for item in result["errors"]
+    )
 
 
 def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> None:
