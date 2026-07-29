@@ -31,6 +31,17 @@ def is_dataset_image_path(path: str) -> bool:
     return Path(path).suffix.lower() in DATASET_IMAGE_SUFFIXES
 
 
+def requires_lowercase_media_suffix(path: str, *, format_name: str) -> bool:
+    if format_name != "anomalib":
+        return False
+    member = PurePosixPath(path)
+    parts = member.parts
+    suffix = member.suffix.lower()
+    return (_is_anomalib_source_role(parts) and suffix in _ANOMALIB_IMAGE_SUFFIXES) or (
+        _is_anomalib_mask_role(parts) and suffix == ".png"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class DatasetRoleInventory:
     format_name: str
@@ -146,17 +157,20 @@ def _member_role(relative_path: str, *, format_name: str) -> str | None:
             return "image"
         return None
     if format_name == "anomalib":
-        if (
-            len(parts) == 3
-            and (parts[0], parts[1]) in _ANOMALIB_SOURCE_ROLES
-            and suffix in _ANOMALIB_IMAGE_SUFFIXES
-        ):
+        if _is_anomalib_source_role(parts) and suffix in _ANOMALIB_IMAGE_SUFFIXES:
             return "image"
-        if (
-            len(parts) == 4
-            and parts[:3] in {("ground_truth", "val", "bad"), ("ground_truth", "test", "bad")}
-            and suffix == ".png"
-        ):
+        if _is_anomalib_mask_role(parts) and suffix == ".png":
             return "mask"
         return None
     raise AssertionError(f"unreachable dataset inventory format: {format_name}")
+
+
+def _is_anomalib_source_role(parts: tuple[str, ...]) -> bool:
+    return len(parts) == 3 and (parts[0], parts[1]) in _ANOMALIB_SOURCE_ROLES
+
+
+def _is_anomalib_mask_role(parts: tuple[str, ...]) -> bool:
+    return len(parts) == 4 and parts[:3] in {
+        ("ground_truth", "val", "bad"),
+        ("ground_truth", "test", "bad"),
+    }

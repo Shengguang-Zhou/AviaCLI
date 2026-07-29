@@ -94,6 +94,19 @@ def test_verify_yolo_accepts_tiff_images(tmp_path: Path) -> None:
     assert "content_type" not in tiff_item
 
 
+def test_verify_yolo_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "images" / "train" / "sample.png").rename(
+        tmp_path / "images" / "train" / "sample.PNG"
+    )
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+    assert "images/train/sample.PNG" in {item["relative_path"] for item in manifest["files"]}
+
+
 def test_verify_yolo_pose_uses_exact_kpt_shape(tmp_path: Path) -> None:
     _write_yolo_dataset(
         tmp_path,
@@ -456,6 +469,19 @@ def _write_coco_dataset(root: Path, *, task_key: str, include_task_field: bool =
     (annotations / "instances.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_verify_coco_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    (tmp_path / "images" / "sample.png").rename(tmp_path / "images" / "sample.PNG")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["images"][0]["file_name"] = "images/sample.PNG"
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "ok"
+
+
 @pytest.mark.parametrize("task_key", ["detect", "segment", "pose"])
 def test_verify_coco_enforces_task_specific_fields(tmp_path: Path, task_key: str) -> None:
     _write_coco_dataset(tmp_path, task_key=task_key)
@@ -741,6 +767,54 @@ def test_verify_imagenet_requires_consistent_class_directories(tmp_path: Path) -
 
     assert result["status"] == "ok"
     assert result["classes"] == ["aircraft"]
+
+
+def test_verify_imagenet_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
+    _write_imagenet_dataset(tmp_path)
+    (tmp_path / "train" / "aircraft" / "a.png").rename(tmp_path / "train" / "aircraft" / "a.PNG")
+    (tmp_path / "val" / "aircraft" / "b.png").rename(tmp_path / "val" / "aircraft" / "b.PNG")
+
+    result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_imagenet_indexes_images_once_instead_of_scanning_per_class(
+    tmp_path: Path,
+) -> None:
+    from avia_cli.core.uploads.inventory import DatasetRoleInventory
+    from avia_cli.core.uploads.validation_folders import validate_imagenet
+
+    class CountingImagePaths:
+        def __init__(self, values: tuple[str, ...]) -> None:
+            self.values = values
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return iter(self.values)
+
+    class_count = 12
+    image_paths: list[str] = []
+    for index in range(class_count):
+        class_name = f"class-{index:02d}"
+        for split in ("train", "val"):
+            relative = f"{split}/{class_name}/{split}.png"
+            image_paths.append(relative)
+            _write_image(tmp_path / relative)
+    counted_paths = CountingImagePaths(tuple(image_paths))
+    inventory = DatasetRoleInventory(
+        format_name="imagenet",
+        image_paths=counted_paths,  # type: ignore[arg-type]
+        label_paths=(),
+        mask_paths=(),
+    )
+
+    classes, errors = validate_imagenet(tmp_path, inventory=inventory)
+
+    assert len(classes) == class_count
+    assert errors == []
+    assert counted_paths.iterations == 2
 
 
 def test_verify_imagenet_does_not_count_images_from_hidden_client_state(tmp_path: Path) -> None:
@@ -1052,6 +1126,16 @@ def test_verify_anomalib_rejects_uppercase_image_suffix_before_validation(
     _write_anomalib_dataset(tmp_path)
     path = "ground_truth/test/bad/test-bad.PNG"
     _write_image(tmp_path / path)
+
+    with pytest.raises(SystemExit, match='"code": "invalid_dataset_path"'):
+        verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+
+def test_verify_anomalib_rejects_uppercase_source_suffix_before_validation(
+    tmp_path: Path,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "val" / "bad" / "val-bad.jpg").rename(tmp_path / "val" / "bad" / "val-bad.JPG")
 
     with pytest.raises(SystemExit, match='"code": "invalid_dataset_path"'):
         verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")

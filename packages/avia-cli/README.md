@@ -113,9 +113,12 @@ official training data.
 Classification label files contain one unique class id per row. Anomalib
 validation requires exactly `train/good`, `val/{good,bad}`, `test/{good,bad}`,
 and one `ground_truth/{val,test}/bad/<same-stem>.png` mask per bad evaluation
-sample. Role images are direct children and use JPG, JPEG, PNG, or WebP; masks
-use lowercase `.png`. The decoded encoding must match that suffix exactly; renamed
-BMP/TIFF data is rejected, and masks must decode as PNG. Original MVTec
+sample. Role images are direct children and use lowercase `.jpg`, `.jpeg`, `.png`,
+or `.webp`; masks use lowercase `.png`. The decoded encoding must match that suffix
+exactly; renamed BMP/TIFF data is rejected, and masks must decode as PNG. YOLO,
+COCO, and ImageNet preserve supported uppercase image suffixes and validate the
+decoded encoding against their case-normalized suffix. ImageNet builds one
+`(split, class)` index before class validation. Original MVTec
 defect-name directories, `validation`, `_mask` suffix adaptation, missing roles,
 and nested role directories are rejected. Root documentation is limited to
 README, LICENSE, and `source_records.json`, matching the importer. Validation

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from pathlib import Path
+from collections.abc import Callable, Iterable
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from PIL import Image
@@ -56,6 +56,10 @@ def validate_imagenet(
             )
         ]
     expected = set(classes)
+    images_by_class = _index_imagenet_images(
+        source_root=source_root,
+        image_paths=inventory.image_paths,
+    )
     for split in ("train", "val", "test"):
         split_root = source_root / split
         if not split_root.exists():
@@ -78,11 +82,7 @@ def validate_imagenet(
                 )
             )
         for class_name in sorted(actual):
-            paths = [
-                source_root / relative
-                for relative in inventory.image_paths
-                if Path(relative).parts[:2] == (split, class_name)
-            ]
+            paths = images_by_class.get((split, class_name), [])
             if not paths:
                 errors.append(
                     error(
@@ -104,6 +104,20 @@ def validate_imagenet(
         errors=errors,
     )
     return classes, errors
+
+
+def _index_imagenet_images(
+    *,
+    source_root: Path,
+    image_paths: Iterable[str],
+) -> dict[tuple[str, str], list[Path]]:
+    images_by_class: dict[tuple[str, str], list[Path]] = {}
+    for relative in image_paths:
+        parts = PurePosixPath(relative).parts
+        if len(parts) < 3 or parts[0] not in {"train", "val", "test"}:
+            raise RuntimeError("ImageNet inventory contains a non-role image path")
+        images_by_class.setdefault((parts[0], parts[1]), []).append(source_root / relative)
+    return images_by_class
 
 
 def validate_anomalib(

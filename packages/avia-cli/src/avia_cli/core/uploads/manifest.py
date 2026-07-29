@@ -8,6 +8,7 @@ from pathlib import Path
 from avia_cli.core.uploads.inventory import (
     build_role_inventory,
     is_dataset_image_path,
+    requires_lowercase_media_suffix,
 )
 from avia_cli.core.uploads.image_validation import (
     ImageEncodingMismatch,
@@ -43,9 +44,13 @@ def _manifest_item(
     *,
     source_root: Path,
     path: Path,
+    format_name: str,
     include_dimensions: bool = True,
 ) -> dict[str, object]:
-    relative_path = _canonical_relative_path(path.relative_to(source_root))
+    relative_path = _canonical_relative_path(
+        path.relative_to(source_root),
+        format_name=format_name,
+    )
     item: dict[str, object] = {
         "relative_path": relative_path,
         "size_bytes": int(path.stat().st_size),
@@ -105,7 +110,7 @@ def scan_source_manifest(
     paths: list[Path] = []
     for path in sorted(source_root.rglob("*")):
         relative = path.relative_to(source_root)
-        relative_path = _canonical_relative_path(relative)
+        relative_path = _canonical_relative_path(relative, format_name=format_name)
         if path.is_symlink():
             _raise_manifest_error(
                 "dataset_symlink",
@@ -134,6 +139,7 @@ def scan_source_manifest(
         return _manifest_item(
             source_root=source_root,
             path=path,
+            format_name=format_name,
             include_dimensions=include_dimensions,
         )
 
@@ -171,7 +177,7 @@ def _raise_manifest_error(code: str, message: str, *, path: str) -> None:
     )
 
 
-def _canonical_relative_path(relative: Path) -> str:
+def _canonical_relative_path(relative: Path, *, format_name: str) -> str:
     raw = relative.as_posix()
     normalized = unicodedata.normalize("NFC", raw)
     suffix = relative.suffix
@@ -183,7 +189,10 @@ def _canonical_relative_path(relative: Path) -> str:
         or raw.startswith("/")
         or any(part in {"", ".", ".."} or part != part.strip() for part in raw.split("/"))
         or any(unicodedata.category(character) == "Cc" for character in raw)
-        or (is_dataset_image_path(raw) and suffix != suffix.lower())
+        or (
+            requires_lowercase_media_suffix(raw, format_name=format_name)
+            and suffix != suffix.lower()
+        )
     )
     if invalid:
         _raise_manifest_error(
