@@ -7,15 +7,11 @@ from typing import Any
 from PIL import Image
 
 from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES
-from avia_cli.core.uploads.manifest import (
-    DATASET_IMAGE_SUFFIXES,
-    _is_image_path,
-    is_client_state_path,
-)
+from avia_cli.core.uploads.inventory import DatasetRoleInventory
+from avia_cli.core.uploads.manifest import is_client_state_path
 from avia_cli.core.uploads.validation_common import (
     dataset_role_directories,
     error,
-    image_files,
     image_size,
     is_cache_path,
     is_document_path,
@@ -42,7 +38,11 @@ _ANOMALIB_DIRECTORIES = frozenset(
 )
 
 
-def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]]]:
+def validate_imagenet(
+    source_root: Path,
+    *,
+    inventory: DatasetRoleInventory,
+) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     train_root = source_root / "train"
     classes = [
@@ -78,7 +78,11 @@ def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]
                 )
             )
         for class_name in sorted(actual):
-            paths = image_files(source_root=source_root, root=split_root / class_name)
+            paths = [
+                source_root / relative
+                for relative in inventory.image_paths
+                if Path(relative).parts[:2] == (split, class_name)
+            ]
             if not paths:
                 errors.append(
                     error(
@@ -95,25 +99,28 @@ def validate_imagenet(source_root: Path) -> tuple[list[str], list[dict[str, Any]
         )
     _validate_folder_roles(
         source_root,
-        allowed=lambda path: (
-            len(Path(path).parts) >= 3
-            and Path(path).parts[0] in {"train", "val", "test"}
-            and Path(path).parts[1] in expected
-            and _is_image_path(path)
-        ),
+        allowed=set(inventory.image_paths).__contains__,
         code="unexpected_imagenet_member",
         errors=errors,
     )
     return classes, errors
 
 
-def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]]]:
+def validate_anomalib(
+    source_root: Path,
+    *,
+    inventory: DatasetRoleInventory,
+) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
     _validate_anomalib_directories(source_root=source_root, errors=errors)
 
     images_by_role: dict[tuple[str, str], list[Path]] = {}
     for split, class_name in _ANOMALIB_ROLES:
-        paths = _anomalib_source_images(source_root / split / class_name)
+        paths = [
+            source_root / relative
+            for relative in inventory.image_paths
+            if Path(relative).parts[:2] == (split, class_name)
+        ]
         images_by_role[(split, class_name)] = paths
         if not paths:
             errors.append(
@@ -170,11 +177,7 @@ def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]
                 )
             _validate_anomaly_mask(source_root=source_root, mask=mask, errors=errors)
 
-    actual_masks = {
-        path
-        for split in _ANOMALIB_EVALUATION_SPLITS
-        for path in _anomalib_mask_images(source_root / "ground_truth" / split / "bad")
-    }
+    actual_masks = {source_root / relative for relative in inventory.mask_paths}
     for orphan in sorted(actual_masks - expected_masks):
         errors.append(
             error(
@@ -184,8 +187,8 @@ def validate_anomalib(source_root: Path) -> tuple[list[str], list[dict[str, Any]
             )
         )
 
-    allowed_images = {
-        path.relative_to(source_root).as_posix() for path in [*all_sources, *matched_masks]
+    allowed_images = set(inventory.image_paths) | {
+        path.relative_to(source_root).as_posix() for path in matched_masks
     }
     _validate_folder_roles(
         source_root,
@@ -223,22 +226,6 @@ def _validate_anomalib_directories(
                 path=relative,
             )
         )
-
-
-def _anomalib_source_images(root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(
-        path
-        for path in root.iterdir()
-        if path.is_file() and path.suffix.lower() in DATASET_IMAGE_SUFFIXES
-    )
-
-
-def _anomalib_mask_images(root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(path for path in root.iterdir() if path.is_file() and path.suffix == ".png")
 
 
 def _is_anomalib_document_path(relative_path: str) -> bool:

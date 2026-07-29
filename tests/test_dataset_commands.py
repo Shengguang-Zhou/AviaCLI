@@ -365,6 +365,7 @@ def test_human_readable_inspect_and_verify_output_carries_task_key(
         "file_count": 3,
         "image_count": 1,
         "label_count": 1,
+        "mask_count": 0,
         "total_bytes": 100,
     }
 
@@ -466,8 +467,6 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "reason": "queued",
                     "dispatch_mode": "celery",
                     "worker_task_id": "task_123",
-                    "dataset_version_id": "dv_123",
-                    "version_ref": {"dataset_version_id": "dv_123"},
                 },
                 "files": {
                     "classes.txt": {

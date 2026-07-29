@@ -8,7 +8,7 @@ from typing import Any
 
 from PIL import Image
 
-from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
+from avia_cli.core.uploads.manifest import is_client_state_path
 
 _DOCUMENT_NAMES = {
     "LICENSE",
@@ -70,18 +70,6 @@ def dataset_role_directories(*, source_root: Path, role_root: Path) -> list[Path
         path
         for path in role_root.iterdir()
         if path.is_dir() and not is_client_state_path(path.relative_to(source_root))
-    )
-
-
-def image_files(*, source_root: Path, root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file()
-        and not is_client_state_path(path.relative_to(source_root))
-        and _is_image_path(path.name)
     )
 
 

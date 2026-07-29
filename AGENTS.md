@@ -16,6 +16,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   verified descriptor and must match the persisted SHA-256 before any network request.
 - Every image is fully decoded before any HTTP request or state write. YOLO
   validation also compares decoded dimensions with manifest dimensions when present.
+- One format-aware role inventory owns inspection, validation, manifest, and upload counts.
+  Public JSON exposes `image_count`, `label_count`, and `mask_count`; Anomalib
+  `ground_truth/**` members count only as masks and never inflate image or label counts.
 - Anomalib masks use Pillow's non-deprecated `get_flattened_data()` API, so the package requires
   Pillow 12.1 or newer; dependency metadata must not claim support for an older Pillow ABI.
 - Anomalib has one trainable folder contract: `train/good`, both
@@ -55,7 +58,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   Content type is server-owned canonical metadata: the client validates the signed response and
   exact `Content-Type` header, persists only that server value after a successful PUT, and reuses
   it for batch completion. Browser/host MIME guesses, dimensions, and completion metadata must
-  never be echoed into the signing request or substituted during resume.
+  never be echoed into the signing request or substituted during resume. The one media-type
+  parser accepts exactly lowercase ASCII `token/token` without whitespace, parameters, controls,
+  empty sides, or additional slashes.
 - A failed concurrent PUT or batch-complete request must not return while sibling operations are
   still running. Drain them, persist every completed side effect to resume state, expose all
   additional failures, then raise one structured aggregate error.
@@ -66,7 +71,10 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 - `POST /projects/{project_id}/imports/{import_id}/complete` has one
   `avia.import-complete-queued/v1` response. A retry after response loss must decode the exact same
   persisted queued receipt, including non-empty `dispatch_mode` and `worker_task_id`; the client
-  never weakens this contract or treats a partial replay response as success.
+  never weakens this contract or treats a partial replay response as success. Pending, uploaded,
+  queued, running, and failed responses cannot expose a dataset-version identity; the client
+  accepts only absent or paired-null identity fields there. A succeeded poll requires matching
+  non-empty `dataset_version_id` and `version_ref.dataset_version_id`.
 - Derive hashing/batching parameters locally. Probe transport RTT only against the first validated
   API-issued signed storage URL with a side-effect-free HEAD using the exact explicit proxy
   snapshot that PUT will use; never treat the control-plane API host as the storage host. A

@@ -5,6 +5,10 @@ import json
 import unicodedata
 from pathlib import Path
 
+from avia_cli.core.uploads.inventory import (
+    build_role_inventory,
+    is_dataset_image_path,
+)
 from avia_cli.core.uploads.metadata import read_yolo_class_names
 
 
@@ -12,13 +16,6 @@ class ManifestImageError(RuntimeError):
     def __init__(self, *, relative_path: str, detail: str) -> None:
         self.relative_path = relative_path
         super().__init__(detail)
-
-
-DATASET_IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"})
-
-
-def _is_image_path(path: str) -> bool:
-    return Path(str(path or "")).suffix.lower() in DATASET_IMAGE_SUFFIXES
 
 
 def is_client_state_path(relative_path: Path) -> bool:
@@ -52,7 +49,7 @@ def _manifest_item(
         "relative_path": relative_path,
         "size_bytes": int(path.stat().st_size),
     }
-    if _is_image_path(relative_path):
+    if is_dataset_image_path(relative_path):
         try:
             width, height = _image_size_file(path)
         except RuntimeError as exc:
@@ -66,7 +63,7 @@ def scan_source_manifest(
     *,
     include_dimensions: bool = True,
     hash_workers: int = 1,
-    format_name: str = "",
+    format_name: str,
 ) -> dict[str, object]:
     requested_root = Path(root).expanduser()
     if requested_root.is_symlink():
@@ -134,13 +131,18 @@ def scan_source_manifest(
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             files = list(executor.map(build_item, paths))
 
+    inventory = build_role_inventory(
+        (str(item["relative_path"]) for item in files),
+        format_name=format_name,
+    )
     manifest: dict[str, object] = {
         "source": str(source_root),
         "file_count": len(files),
         "total_bytes": sum(int(item.get("size_bytes") or 0) for item in files),
         "files": files,
+        **inventory.counts(),
     }
-    if str(format_name or "").strip().lower() == "yolo":
+    if format_name == "yolo":
         manifest["classes"] = read_yolo_class_names(source_root)
     return manifest
 
@@ -166,7 +168,7 @@ def _canonical_relative_path(relative: Path) -> str:
         or raw.startswith("/")
         or any(part in {"", ".", ".."} or part != part.strip() for part in raw.split("/"))
         or any(unicodedata.category(character) == "Cc" for character in raw)
-        or (_is_image_path(raw) and suffix != suffix.lower())
+        or (is_dataset_image_path(raw) and suffix != suffix.lower())
     )
     if invalid:
         _raise_manifest_error(

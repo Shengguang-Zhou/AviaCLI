@@ -64,6 +64,9 @@ def test_scan_source_manifest_reads_yolo_images_and_labels(tmp_path: Path) -> No
     assert "images/train/a.jpg" in paths
     assert "labels/train/a.txt" in paths
     assert manifest["file_count"] == 2
+    assert manifest["image_count"] == 1
+    assert manifest["label_count"] == 1
+    assert manifest["mask_count"] == 0
 
 
 def test_upload_origin_override_benchmark_bypass_is_not_a_cli_option() -> None:

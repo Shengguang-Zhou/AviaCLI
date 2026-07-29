@@ -118,7 +118,10 @@ use lowercase `.png`. Original MVTec defect-name directories, `validation`,
 `_mask` suffix adaptation, missing roles, and nested role directories are
 rejected. Root documentation is limited to README, LICENSE, and
 `source_records.json`, matching the importer. Validation reports the sole binary
-taxonomy `["good", "bad"]`.
+taxonomy `["good", "bad"]`. The same role inventory drives inspection,
+validation, manifest generation, and upload JSON: source samples are
+`image_count`, YOLO/COCO annotations are `label_count`, and Anomalib
+`ground_truth/**` members are exclusively `mask_count`.
 Validation errors exit non-zero; missing labels or unknown classes are never warnings.
 For multilabel classification, an existing empty label file is an explicit
 negative sample; an absent label file remains an error.
@@ -132,7 +135,11 @@ images with the same dimensions as their defect image.
 
 API bases are canonical absolute `http(s)` URLs without credentials, queries, fragments,
 whitespace, default ports, or trailing slashes. Session, signed-URL, batch-complete, finalization,
-and poll responses use exact field and status decoders; historical aliases are rejected. Auth
+and poll responses use exact field and status decoders; historical aliases are rejected.
+Signed media types are exact lowercase ASCII `token/token` values without parameters,
+whitespace, controls, empty tokens, or extra slashes. Pre-publication responses cannot expose a
+dataset-version identity, while a succeeded poll requires matching `dataset_version_id` and
+`version_ref.dataset_version_id`. Auth
 refresh occurs only for `401` or explicit `token_expired`, never `403`, and an explicit token is
 never associated with environment password or refresh-token credentials from another identity.
 

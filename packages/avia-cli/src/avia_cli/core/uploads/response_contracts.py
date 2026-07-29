@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from avia_cli.core.uploads.contracts import require_format_task, require_object_prefix_uri
+from avia_cli.core.uploads.media_types import require_canonical_media_type
 
 IMPORT_ACTIVE_STATUSES = frozenset({"pending_upload", "uploaded", "queued", "running"})
 IMPORT_TERMINAL_STATUSES = frozenset({"succeeded", "failed"})
@@ -189,15 +190,10 @@ def decode_batch_upload_urls_response(
             raise RuntimeError(f"batch-upload-urls response returned unrequested {relative_path}")
         if raw.get("size_bytes") != expected.get("size_bytes"):
             raise RuntimeError(f"batch-upload-urls size mismatch for {relative_path}")
-        content_type = _require_nonempty_string(
-            raw,
-            "content_type",
-            label="batch-upload-urls file",
+        content_type = require_canonical_media_type(
+            raw.get("content_type"),
+            label=f"batch-upload-urls content_type for {relative_path}",
         )
-        if content_type != content_type.lower() or "/" not in content_type or ";" in content_type:
-            raise RuntimeError(
-                f"batch-upload-urls content_type is not canonical for {relative_path}"
-            )
         expected_sha = str(expected.get("sha256") or "") or None
         if raw.get("sha256") != expected_sha:
             raise RuntimeError(f"batch-upload-urls sha256 mismatch for {relative_path}")
@@ -243,15 +239,10 @@ def decode_batch_complete_response(
     _require_exact_fields(
         payload,
         {
-            "dataset_version_id",
-            "embedding_incremental_pipeline",
-            "image_ids",
             "import_id",
-            "post_upload_pipeline",
             "project_id",
             "status",
             "uploaded_files",
-            "version_ref",
             "workspace_id",
         },
         label="batch-complete response",
@@ -261,16 +252,6 @@ def decode_batch_complete_response(
         raise RuntimeError("batch-complete status must be streaming_upload")
     if payload.get("uploaded_files") != len(requested_paths):
         raise RuntimeError("batch-complete uploaded_files does not match the requested batch")
-    image_ids = payload.get("image_ids")
-    if (
-        not isinstance(image_ids, list)
-        or any(not isinstance(item, str) or not item for item in image_ids)
-        or len(set(image_ids)) != len(image_ids)
-    ):
-        raise RuntimeError("batch-complete image_ids must be unique non-empty strings")
-    for key in ("post_upload_pipeline", "embedding_incremental_pipeline"):
-        _require_object(payload, key, label="batch-complete response")
-    parse_version_ref_identity(payload, label="batch-complete response")
     return payload
 
 
@@ -281,14 +262,12 @@ def decode_complete_import_response(
         payload,
         {
             "dataset_manifest_ref",
-            "dataset_version_id",
             "dispatch_mode",
             "import_id",
             "project_id",
             "read_lease",
             "reason",
             "status",
-            "version_ref",
             "worker_task_id",
             "workspace_id",
         },
@@ -299,7 +278,6 @@ def decode_complete_import_response(
         raise RuntimeError("complete-import status must be queued")
     _require_object(payload, "dataset_manifest_ref", label="complete-import response")
     _require_object(payload, "read_lease", label="complete-import response")
-    parse_version_ref_identity(payload, label="complete-import response")
     if payload.get("reason") != "queued":
         raise RuntimeError("complete-import reason must be queued")
     _require_nonempty_string(payload, "dispatch_mode", label="complete-import response")
@@ -310,33 +288,62 @@ def decode_complete_import_response(
 def decode_import_job_response(
     payload: dict[str, Any], *, project_id: str, import_id: str
 ) -> dict[str, Any]:
-    _require_exact_fields(
-        payload,
-        {
-            "dataset_validation",
-            "dataset_version_id",
-            "error",
-            "import_id",
-            "progress",
-            "project_id",
-            "status",
-            "version_ref",
-            "workspace_id",
-        },
-        label="import-job response",
-    )
-    _require_identity(payload, project_id=project_id, import_id=import_id)
     status = payload.get("status")
     if status not in IMPORT_STATUSES:
         raise RuntimeError(f"import-job response has unsupported status: {status!r}")
+    base_fields = {
+        "dataset_validation",
+        "error",
+        "import_id",
+        "progress",
+        "project_id",
+        "status",
+        "workspace_id",
+    }
+    identity_fields = {"dataset_version_id", "version_ref"}
+    actual_fields = set(payload)
+    expected_fields = (
+        base_fields | identity_fields if identity_fields.issubset(actual_fields) else base_fields
+    )
+    _require_exact_fields(payload, expected_fields, label="import-job response")
+    _require_identity(payload, project_id=project_id, import_id=import_id)
     for key in ("progress", "error"):
         if not isinstance(payload.get(key), dict):
             raise RuntimeError(f"import-job response {key} must be an object")
     dataset_validation = payload.get("dataset_validation")
     if dataset_validation is not None and not isinstance(dataset_validation, dict):
         raise RuntimeError("import-job response dataset_validation must be null or an object")
-    parse_version_ref_identity(payload, label="import-job response")
+    validate_version_ref_phase(
+        payload,
+        status=str(status),
+        label="import-job response",
+    )
     return payload
+
+
+def validate_version_ref_phase(
+    payload: dict[str, Any],
+    *,
+    status: str,
+    label: str,
+) -> dict[str, Any] | None:
+    has_dataset_version_id = "dataset_version_id" in payload
+    has_version_ref = "version_ref" in payload
+    if status == "succeeded":
+        if not has_dataset_version_id or not has_version_ref:
+            raise RuntimeError(
+                f"{label} succeeded status requires dataset_version_id and version_ref"
+            )
+        return parse_version_ref_identity(payload, label=label)
+    if has_dataset_version_id != has_version_ref:
+        raise RuntimeError(f"{label} pre-published identity fields must both be absent or null")
+    if has_dataset_version_id and (
+        payload.get("dataset_version_id") is not None or payload.get("version_ref") is not None
+    ):
+        raise RuntimeError(
+            f"{label} must not expose dataset_version_id or version_ref before succeeded"
+        )
+    return None
 
 
 def parse_version_ref_identity(

@@ -85,7 +85,14 @@ Anomalib uses one explicit training layout: `train/good`, `val/{good,bad}`,
 `test/{good,bad}`, and `ground_truth/{val,test}/bad/<same-stem>.png`. The CLI rejects original
 MVTec defect-name folders, `validation`, `_mask` filename adaptation, nested role directories,
 missing roles, and missing masks before creating an upload session. Its only AD taxonomy is
-`["good", "bad"]`.
+`["good", "bad"]`. Inspection, validation, manifest generation, and upload share one role
+inventory and report separate `image_count`, `label_count`, and `mask_count` values; Anomalib
+masks are never counted as source images or labels.
+
+Signed folder media types use one strict lowercase ASCII `token/token` contract with no
+parameters, whitespace, control characters, empty token, or extra slash. Import responses do
+not expose dataset-version identity before publication; only `succeeded` requires matching
+`dataset_version_id` and `version_ref.dataset_version_id`.
 
 With the local backend, `woodpeckerci/plugin-git:2.9.2` identifies the host `plugin-git` clone
 binary; it is not an OCI image pin. The clone disables LFS and partial clone. Its complete shallow

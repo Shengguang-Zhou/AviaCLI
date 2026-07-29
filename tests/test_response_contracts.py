@@ -8,6 +8,7 @@ import pytest
 
 from avia_cli.context import api_from_args
 from avia_cli.core.api_base import canonical_api_base
+from avia_cli.core.uploads.api import _complete_dataset_file_batch
 from avia_cli.core.uploads.dataset import create_source_import
 from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.response_contracts import (
@@ -338,6 +339,85 @@ def test_batch_upload_decoder_treats_content_type_as_server_owned() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "",
+        "/png",
+        "image/",
+        "image//png",
+        " image/png",
+        "image/png ",
+        "image /png",
+        "image/\npng",
+        "image/png; charset=utf-8",
+        "IMAGE/PNG",
+        "image/π",
+    ],
+)
+def test_batch_upload_decoder_rejects_noncanonical_media_types(
+    content_type: str,
+) -> None:
+    requested = [
+        {
+            "relative_path": "images/train/a.png",
+            "size_bytes": 12,
+            "sha256": "a" * 64,
+        }
+    ]
+    item = {
+        **requested[0],
+        "content_type": content_type,
+        "object_key": "objects/a.png",
+        "upload_url": "https://storage.example/a?signature=secret",
+        "required_headers": {"Content-Type": content_type},
+        "expires_in": 900,
+    }
+
+    with pytest.raises(RuntimeError, match="content_type"):
+        decode_batch_upload_urls_response(
+            {
+                "workspace_id": "ws_123",
+                "project_id": PROJECT_ID,
+                "import_id": IMPORT_ID,
+                "files": [item],
+            },
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            requested_files=requested,
+        )
+
+
+@pytest.mark.parametrize("content_type", ["image//png", "image/png ", "image/\x00png"])
+def test_batch_complete_manifest_reuses_canonical_media_type_contract(
+    content_type: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.api._request_json",
+        lambda **_kwargs: pytest.fail("invalid manifest media type reached HTTP"),
+    )
+
+    with pytest.raises(RuntimeError, match="batch-complete content_type"):
+        _complete_dataset_file_batch(
+            api="https://avia.example/api/v1",
+            token="token",
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            files=[
+                {
+                    "relative_path": "images/train/a.png",
+                    "object_key": "objects/a.png",
+                    "size_bytes": 12,
+                    "content_type": content_type,
+                    "sha256": "a" * 64,
+                    "width": 16,
+                    "height": 12,
+                }
+            ],
+        )
+
+
 def test_batch_complete_decoder_requires_proof_of_exact_accepted_batch() -> None:
     payload = {
         "workspace_id": "ws_123",
@@ -345,11 +425,6 @@ def test_batch_complete_decoder_requires_proof_of_exact_accepted_batch() -> None
         "import_id": IMPORT_ID,
         "status": "streaming_upload",
         "uploaded_files": 1,
-        "image_ids": ["img_123"],
-        "dataset_version_id": "dv_123",
-        "version_ref": {"dataset_version_id": "dv_123"},
-        "post_upload_pipeline": {"status": "queued"},
-        "embedding_incremental_pipeline": {"status": "skipped"},
     }
     assert (
         decode_batch_complete_response(
@@ -367,9 +442,9 @@ def test_batch_complete_decoder_requires_proof_of_exact_accepted_batch() -> None
             import_id=IMPORT_ID,
             requested_paths=["images/train/a.png"],
         )
-    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+    with pytest.raises(RuntimeError, match="fields must be exact"):
         decode_batch_complete_response(
-            {**payload, "version_ref": {"id": "dv_123"}},
+            {**payload, "dataset_version_id": "dv_123"},
             project_id=PROJECT_ID,
             import_id=IMPORT_ID,
             requested_paths=["images/train/a.png"],
@@ -388,8 +463,6 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "reason": "queued",
         "dispatch_mode": "celery",
         "worker_task_id": "task_123",
-        "dataset_version_id": "dv_123",
-        "version_ref": {"dataset_version_id": "dv_123"},
     }
     assert decode_complete_import_response(complete, project_id=PROJECT_ID, import_id=IMPORT_ID)
     job = {
@@ -412,17 +485,18 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
 
 
 @pytest.mark.parametrize(
-    "version_ref",
+    "identity",
     [
-        {"id": "dv_123"},
-        {"dataset_version_id": ""},
-        {"dataset_version_id": " dv_123"},
-        {"dataset_version_id": "dv_other"},
-        {"dataset_version_id": "dv_123", "id": "dv_123"},
+        {"dataset_version_id": None, "version_ref": None},
+        {"dataset_version_id": "dv_123", "version_ref": None},
+        {
+            "dataset_version_id": "dv_123",
+            "version_ref": {"dataset_version_id": "dv_123"},
+        },
     ],
 )
-def test_complete_import_rejects_noncanonical_version_reference_identity(
-    version_ref: dict[str, object],
+def test_complete_import_rejects_prepublication_version_identity(
+    identity: dict[str, object],
 ) -> None:
     ref, lease = _ref_payload()
     payload = {
@@ -435,16 +509,36 @@ def test_complete_import_rejects_noncanonical_version_reference_identity(
         "reason": "queued",
         "dispatch_mode": "celery",
         "worker_task_id": "task_123",
-        "dataset_version_id": "dv_123",
-        "version_ref": version_ref,
+        **identity,
     }
 
-    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+    with pytest.raises(RuntimeError, match="fields must be exact"):
         decode_complete_import_response(payload, project_id=PROJECT_ID, import_id=IMPORT_ID)
 
 
-@pytest.mark.parametrize("status", sorted(IMPORT_STATUSES))
-def test_every_import_job_status_rejects_historical_version_reference(status: str) -> None:
+@pytest.mark.parametrize("status", sorted(IMPORT_STATUSES - {"succeeded"}))
+@pytest.mark.parametrize("identity_mode", ["absent", "null"])
+def test_prepublication_import_job_accepts_only_absent_or_null_version_identity(
+    status: str,
+    identity_mode: str,
+) -> None:
+    job = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": status,
+        "progress": {"phase": status},
+        "error": {},
+        "dataset_validation": None,
+    }
+    if identity_mode == "null":
+        job.update({"dataset_version_id": None, "version_ref": None})
+
+    assert decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID) is job
+
+
+@pytest.mark.parametrize("status", sorted(IMPORT_STATUSES - {"succeeded"}))
+def test_prepublication_import_job_rejects_product_version_identity(status: str) -> None:
     job = {
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
@@ -454,10 +548,10 @@ def test_every_import_job_status_rejects_historical_version_reference(status: st
         "error": {},
         "dataset_validation": None,
         "dataset_version_id": "dv_123",
-        "version_ref": {"id": "dv_123"},
+        "version_ref": {"dataset_version_id": "dv_123"},
     }
 
-    with pytest.raises(RuntimeError, match="version_ref dataset_version_id"):
+    with pytest.raises(RuntimeError, match="must not expose"):
         decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID)
 
 

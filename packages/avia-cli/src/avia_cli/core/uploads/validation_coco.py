@@ -9,7 +9,8 @@ import cv2
 import numpy as np
 from pycocotools import mask as mask_utils
 
-from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
+from avia_cli.core.uploads.inventory import DatasetRoleInventory
+from avia_cli.core.uploads.manifest import is_client_state_path
 from avia_cli.core.uploads.validation_common import (
     error,
     image_size,
@@ -22,12 +23,17 @@ CocoImageIndex: TypeAlias = dict[str, Path]
 Taxonomy: TypeAlias = tuple[tuple[object, ...], ...]
 
 
-def validate_coco(*, source_root: Path, task_key: str) -> tuple[list[str], list[dict[str, Any]]]:
+def validate_coco(
+    *,
+    source_root: Path,
+    inventory: DatasetRoleInventory,
+    task_key: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
-    annotation_paths = sorted((source_root / "annotations").glob("*.json"))
+    annotation_paths = [source_root / relative for relative in inventory.label_paths]
     if not annotation_paths:
         return [], [error("missing_coco_annotations", "COCO annotations/*.json is required")]
-    image_index = _build_image_index(source_root)
+    image_index = _build_image_index(source_root, inventory=inventory)
     expected_taxonomy: Taxonomy | None = None
     class_by_id: dict[int, str] = {}
     referenced_images: dict[str, str] = {}
@@ -370,18 +376,12 @@ def _canonical_coco_path(value: str) -> bool:
     )
 
 
-def _build_image_index(source_root: Path) -> CocoImageIndex:
-    by_relative: dict[str, Path] = {}
-    for path in sorted(source_root.rglob("*")):
-        if (
-            not path.is_file()
-            or is_client_state_path(path.relative_to(source_root))
-            or not _is_image_path(path.name)
-        ):
-            continue
-        relative = path.relative_to(source_root).as_posix()
-        by_relative[relative] = path
-    return by_relative
+def _build_image_index(
+    source_root: Path,
+    *,
+    inventory: DatasetRoleInventory,
+) -> CocoImageIndex:
+    return {relative: source_root / relative for relative in inventory.image_paths}
 
 
 def _resolve_image_path(image_index: CocoImageIndex, relative: Path) -> Path:

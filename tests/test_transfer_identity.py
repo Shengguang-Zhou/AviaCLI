@@ -93,6 +93,31 @@ def test_folder_put_rejects_symlink_replacement_before_any_request(
     assert request_count == 0
 
 
+@pytest.mark.parametrize("content_type", ["image//png", "image/png ", "image/\x00png"])
+def test_folder_put_reuses_canonical_media_type_contract_before_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content_type: str,
+) -> None:
+    path = tmp_path / "sample.bin"
+    path.write_bytes(b"validated")
+    identity = capture_source_identity(path)
+    monkeypatch.setattr(
+        "requests.Session",
+        lambda: _Session(lambda *_args, **_kwargs: pytest.fail("invalid Content-Type reached PUT")),
+    )
+
+    with pytest.raises(RuntimeError, match="upload Content-Type"):
+        _put_file_with_retries(
+            route=_route(),
+            path=path,
+            expected_identity=identity,
+            headers={"Content-Type": content_type},
+            retries=1,
+            base_delay_sec=0.001,
+        )
+
+
 def test_folder_put_uses_the_explicit_frozen_route_proxy_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

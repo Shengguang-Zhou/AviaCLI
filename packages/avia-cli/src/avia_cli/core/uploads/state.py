@@ -15,10 +15,9 @@ from filelock import FileLock, Timeout
 
 from avia_cli.core.api_base import canonical_api_base
 from avia_cli.core.uploads.contracts import require_object_prefix_uri
+from avia_cli.core.uploads.inventory import is_dataset_image_path
+from avia_cli.core.uploads.media_types import require_canonical_media_type
 from avia_cli.core.uploads.response_contracts import validate_source_import_request
-from avia_cli.core.uploads.manifest import (
-    _is_image_path,
-)
 from avia_cli.core.atomic_file import durable_atomic_write, read_regular_file
 from avia_cli.core.uploads.response_contracts import decode_complete_import_response
 from avia_cli.core.uploads.source_file import SourceIdentity, open_verified_source
@@ -88,7 +87,7 @@ def _item_with_upload_metadata(
     item: dict[str, object],
     *,
     source_identity: SourceIdentity,
-    is_image_path: Callable[[str], bool] = _is_image_path,
+    is_image_path: Callable[[str], bool] = is_dataset_image_path,
 ) -> dict[str, object]:
     enriched = dict(item)
     relative_path = str(item["relative_path"])
@@ -127,7 +126,7 @@ def _ensure_sha256_batch(
     files: list[dict[str, object]],
     hash_workers: int,
     source_identities: dict[str, SourceIdentity],
-    is_image_path: Callable[[str], bool] = _is_image_path,
+    is_image_path: Callable[[str], bool] = is_dataset_image_path,
 ) -> list[dict[str, object]]:
     missing = [
         item
@@ -424,14 +423,14 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
         ):
             raise ValueError(f"state file object_key is invalid: {relative_path}")
         content_type = raw.get("content_type")
-        if content_type is not None and (
-            not isinstance(content_type, str)
-            or not content_type
-            or content_type != content_type.strip().lower()
-            or "/" not in content_type
-            or ";" in content_type
-        ):
-            raise ValueError(f"state file content_type is invalid: {relative_path}")
+        if content_type is not None:
+            try:
+                require_canonical_media_type(
+                    content_type,
+                    label=f"state file content_type for {relative_path}",
+                )
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
         identity = raw.get("source_identity")
         if not isinstance(identity, dict) or set(identity) != {
             "device",

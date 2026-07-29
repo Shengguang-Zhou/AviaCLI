@@ -783,6 +783,22 @@ def _write_anomalib_dataset(root: Path) -> None:
     _write_mask(root / "ground_truth" / "test" / "bad" / "test-bad.png")
 
 
+def _write_mvtec_small_corpus(root: Path) -> None:
+    role_counts = {
+        ("train", "good"): 8,
+        ("val", "good"): 2,
+        ("val", "bad"): 3,
+        ("test", "good"): 4,
+        ("test", "bad"): 3,
+    }
+    for (split, class_name), count in role_counts.items():
+        for index in range(count):
+            stem = f"{split}-{class_name}-{index:02d}"
+            _write_image(root / split / class_name / f"{stem}.png")
+            if class_name == "bad":
+                _write_mask(root / "ground_truth" / split / "bad" / f"{stem}.png")
+
+
 def test_verify_anomalib_accepts_only_complete_training_structure(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
 
@@ -790,7 +806,49 @@ def test_verify_anomalib_accepts_only_complete_training_structure(tmp_path: Path
 
     assert result["status"] == "ok"
     assert result["classes"] == ["good", "bad"]
+    assert result["image_count"] == 5
+    assert result["label_count"] == 0
+    assert result["mask_count"] == 2
     assert result["warning_count"] == 0
+
+
+def test_mvtec_small_corpus_has_one_canonical_role_inventory(tmp_path: Path) -> None:
+    _write_mvtec_small_corpus(tmp_path)
+
+    manifest = scan_source_manifest(tmp_path, format_name="anomalib")
+    inspected = inspect_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+    verified = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert verified["status"] == "ok"
+    for payload in (manifest, inspected, verified):
+        assert payload["image_count"] == 20
+        assert payload["label_count"] == 0
+        assert payload["mask_count"] == 6
+
+
+def test_non_ad_formats_keep_format_aware_inventory_counts(tmp_path: Path) -> None:
+    yolo = tmp_path / "yolo"
+    coco = tmp_path / "coco"
+    imagenet = tmp_path / "imagenet"
+    _write_yolo_dataset(yolo, label="0 0.5 0.5 0.25 0.25\n")
+    _write_coco_dataset(coco, task_key="detect")
+    _write_imagenet_dataset(imagenet)
+
+    expected = {
+        "yolo": (yolo, "detect", 1, 1),
+        "coco": (coco, "detect", 1, 1),
+        "imagenet": (imagenet, "classify", 2, 0),
+    }
+    for format_name, (source, task_key, image_count, label_count) in expected.items():
+        result = verify_dataset(
+            source=source,
+            format_name=format_name,
+            task_key=task_key,
+        )
+        assert result["status"] == "ok"
+        assert result["image_count"] == image_count
+        assert result["label_count"] == label_count
+        assert result["mask_count"] == 0
 
 
 def test_verify_anomalib_accepts_tiff_source_images(tmp_path: Path) -> None:
@@ -809,6 +867,9 @@ def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> N
     result = inspect_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
     assert result["classes"] == ["good", "bad"]
+    assert result["image_count"] == 5
+    assert result["label_count"] == 0
+    assert result["mask_count"] == 2
 
 
 @pytest.mark.parametrize("inspect", [inspect_dataset, verify_dataset])
