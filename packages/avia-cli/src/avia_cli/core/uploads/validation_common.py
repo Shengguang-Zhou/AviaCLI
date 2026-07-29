@@ -6,8 +6,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
-
+from avia_cli.core.uploads.image_validation import decoded_image_size
 from avia_cli.core.uploads.manifest import is_client_state_path
 
 _DOCUMENT_NAMES = {
@@ -50,17 +49,7 @@ def json_finite_numbers(value: object) -> list[float] | None:
 
 
 def image_size(path: Path) -> tuple[int, int]:
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            image.load()
-            width, height = int(image.width), int(image.height)
-    except Exception as exc:
-        raise ValueError(f"cannot fully decode image {path}: {exc}") from exc
-    if width <= 0 or height <= 0:
-        raise ValueError("image dimensions must be positive")
-    return width, height
+    return decoded_image_size(path)
 
 
 def dataset_role_directories(*, source_root: Path, role_root: Path) -> list[Path]:

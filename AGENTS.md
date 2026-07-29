@@ -15,7 +15,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   stored regular-file identities; every file already marked uploaded is rehashed through its
   verified descriptor and must match the persisted SHA-256 before any network request.
 - Every image is fully decoded before any HTTP request or state write. YOLO
-  validation also compares decoded dimensions with manifest dimensions when present.
+  validation also compares decoded dimensions with manifest dimensions when present. The decoded
+  Pillow format must exactly match the declared lowercase suffix: JPG/JPEG is `JPEG`, PNG is
+  `PNG`, WebP is `WEBP`, BMP is `BMP`, and TIF/TIFF is `TIFF`; renamed encodings are invalid.
 - One format-aware role inventory owns inspection, validation, manifest, and upload counts.
   Public JSON exposes `image_count`, `label_count`, and `mask_count`; Anomalib
   `ground_truth/**` members count only as masks and never inflate image or label counts.
@@ -26,8 +28,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   `ground_truth/{val,test}/bad`. Original MVTec defect-name directories, `validation`, `_mask`
   suffixes, alternate split derivation, and nested role directories are invalid rather than
   adapted. Root provenance files match the importer exactly: README, LICENSE, and
-  `source_records.json` only. Validation, inspection, and folder-session payloads expose only
-  `["good", "bad"]`.
+  `source_records.json` only. Its source members decode only as JPEG, PNG, or WebP according to
+  their suffix, and every mask decodes as PNG; renaming BMP/TIFF bytes to an allowed suffix is
+  invalid. Validation, inspection, and folder-session payloads expose only `["good", "bad"]`.
 - The published package supports Python 3.10 through 3.12. The workspace, wheel metadata, NumPy
   1.x dependency, lock file, classifiers, internal CI, and release workflow must enforce that one
   range. Quality runs on all three interpreters; release artifacts are built and published once.

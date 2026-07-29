@@ -114,14 +114,15 @@ Classification label files contain one unique class id per row. Anomalib
 validation requires exactly `train/good`, `val/{good,bad}`, `test/{good,bad}`,
 and one `ground_truth/{val,test}/bad/<same-stem>.png` mask per bad evaluation
 sample. Role images are direct children and use JPG, JPEG, PNG, or WebP; masks
-use lowercase `.png`. Original MVTec defect-name directories, `validation`,
-`_mask` suffix adaptation, missing roles, and nested role directories are
-rejected. Root documentation is limited to README, LICENSE, and
-`source_records.json`, matching the importer. Validation reports the sole binary
-taxonomy `["good", "bad"]`. The same role inventory drives inspection,
-validation, manifest generation, and upload JSON: source samples are
-`image_count`, YOLO/COCO annotations are `label_count`, and Anomalib
-`ground_truth/**` members are exclusively `mask_count`.
+use lowercase `.png`. The decoded encoding must match that suffix exactly; renamed
+BMP/TIFF data is rejected, and masks must decode as PNG. Original MVTec
+defect-name directories, `validation`, `_mask` suffix adaptation, missing roles,
+and nested role directories are rejected. Root documentation is limited to
+README, LICENSE, and `source_records.json`, matching the importer. Validation
+reports the sole binary taxonomy `["good", "bad"]`. The same role inventory
+drives inspection, validation, manifest generation, and upload JSON: source
+samples are `image_count`, YOLO/COCO annotations are `label_count`, and
+Anomalib `ground_truth/**` members are exclusively `mask_count`.
 Validation errors exit non-zero; missing labels or unknown classes are never warnings.
 For multilabel classification, an existing empty label file is an explicit
 negative sample; an absent label file remains an error.

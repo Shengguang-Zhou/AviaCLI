@@ -87,7 +87,9 @@ MVTec defect-name folders, `validation`, `_mask` filename adaptation, nested rol
 missing roles, and missing masks before creating an upload session. Its only AD taxonomy is
 `["good", "bad"]`. Inspection, validation, manifest generation, and upload share one role
 inventory and report separate `image_count`, `label_count`, and `mask_count` values; Anomalib
-masks are never counted as source images or labels.
+masks are never counted as source images or labels. Decoded source encodings must be JPEG, PNG,
+or WebP exactly as declared by their suffix, and masks must decode as PNG; renamed BMP/TIFF bytes
+are invalid.
 
 Signed folder media types use one strict lowercase ASCII `token/token` contract with no
 parameters, whitespace, control characters, empty token, or extra slash. Import responses do

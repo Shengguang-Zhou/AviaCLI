@@ -33,6 +33,48 @@ _INGESTION_JOB_BASE_FIELDS = {
 _INGESTION_JOB_IDENTITY_FIELDS = {"dataset_version_id", "version_ref"}
 
 
+def _manifest_image_failure(
+    *,
+    source: str | Path,
+    format_name: str,
+    task_key: str,
+    error: RuntimeError,
+) -> dict[str, Any]:
+    expected_format = getattr(error, "expected_format", None)
+    actual_format = getattr(error, "actual_format", None)
+    details = (
+        {
+            "expected_format": expected_format,
+            "actual_format": actual_format,
+        }
+        if isinstance(expected_format, str) and isinstance(actual_format, str)
+        else {}
+    )
+    return {
+        "source": str(Path(source).expanduser().resolve()),
+        "format": format_name,
+        "task_key": task_key,
+        "file_count": 0,
+        "image_count": 0,
+        "label_count": 0,
+        "mask_count": 0,
+        "total_bytes": 0,
+        "classes": _manifest_classes({}, format_name=format_name),
+        "status": "failed",
+        "error_count": 1,
+        "warning_count": 0,
+        "errors": [
+            {
+                "code": "invalid_image",
+                "message": str(error),
+                "path": str(getattr(error, "relative_path", "")),
+                **details,
+            }
+        ],
+        "warnings": [],
+    }
+
+
 def inspect_dataset(
     *,
     source: str | Path,
@@ -49,28 +91,12 @@ def inspect_dataset(
             format_name=format_name,
         )
     except RuntimeError as exc:
-        return {
-            "source": str(Path(source).expanduser().resolve()),
-            "format": format_name,
-            "task_key": task_key,
-            "file_count": 0,
-            "image_count": 0,
-            "label_count": 0,
-            "mask_count": 0,
-            "total_bytes": 0,
-            "classes": _manifest_classes({}, format_name=format_name),
-            "status": "failed",
-            "error_count": 1,
-            "warning_count": 0,
-            "errors": [
-                {
-                    "code": "invalid_image",
-                    "message": str(exc),
-                    "path": str(getattr(exc, "relative_path", "")),
-                }
-            ],
-            "warnings": [],
-        }
+        return _manifest_image_failure(
+            source=source,
+            format_name=format_name,
+            task_key=task_key,
+            error=exc,
+        )
     return _manifest_summary(manifest, format_name=format_name, task_key=task_key)
 
 
@@ -90,28 +116,12 @@ def verify_dataset(
             format_name=format_name,
         )
     except RuntimeError as exc:
-        return {
-            "source": str(Path(source).expanduser().resolve()),
-            "format": format_name,
-            "task_key": task_key,
-            "file_count": 0,
-            "image_count": 0,
-            "label_count": 0,
-            "mask_count": 0,
-            "total_bytes": 0,
-            "classes": _manifest_classes({}, format_name=format_name),
-            "status": "failed",
-            "error_count": 1,
-            "warning_count": 0,
-            "errors": [
-                {
-                    "code": "invalid_image",
-                    "message": str(exc),
-                    "path": str(getattr(exc, "relative_path", "")),
-                }
-            ],
-            "warnings": [],
-        }
+        return _manifest_image_failure(
+            source=source,
+            format_name=format_name,
+            task_key=task_key,
+            error=exc,
+        )
     summary = _manifest_summary(manifest, format_name=format_name, task_key=task_key)
     classes, errors, warnings = validate_dataset(
         source_root=Path(str(manifest["source"])),

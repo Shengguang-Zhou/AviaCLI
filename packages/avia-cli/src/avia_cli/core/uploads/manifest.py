@@ -9,12 +9,25 @@ from avia_cli.core.uploads.inventory import (
     build_role_inventory,
     is_dataset_image_path,
 )
+from avia_cli.core.uploads.image_validation import (
+    ImageEncodingMismatch,
+    decoded_image_size,
+)
 from avia_cli.core.uploads.metadata import read_yolo_class_names
 
 
 class ManifestImageError(RuntimeError):
-    def __init__(self, *, relative_path: str, detail: str) -> None:
+    def __init__(
+        self,
+        *,
+        relative_path: str,
+        detail: str,
+        expected_format: str | None = None,
+        actual_format: str | None = None,
+    ) -> None:
         self.relative_path = relative_path
+        self.expected_format = expected_format
+        self.actual_format = actual_format
         super().__init__(detail)
 
 
@@ -23,19 +36,7 @@ def is_client_state_path(relative_path: Path) -> bool:
 
 
 def _image_size_file(path: Path) -> tuple[int, int]:
-    try:
-        from PIL import Image
-
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            image.load()
-            width, height = int(image.width), int(image.height)
-        if width <= 0 or height <= 0:
-            raise ValueError("image dimensions must be positive")
-        return width, height
-    except Exception as exc:
-        raise RuntimeError(f"cannot read image dimensions for {path}: {exc}") from exc
+    return decoded_image_size(path)
 
 
 def _manifest_item(
@@ -52,8 +53,22 @@ def _manifest_item(
     if is_dataset_image_path(relative_path):
         try:
             width, height = _image_size_file(path)
-        except RuntimeError as exc:
-            raise ManifestImageError(relative_path=relative_path, detail=str(exc)) from exc
+        except ImageEncodingMismatch as exc:
+            raise ManifestImageError(
+                relative_path=relative_path,
+                detail=(
+                    "image encoding does not match its declared suffix: "
+                    f"path={relative_path} expected={exc.expected_format} "
+                    f"actual={exc.actual_format}"
+                ),
+                expected_format=exc.expected_format,
+                actual_format=exc.actual_format,
+            ) from exc
+        except ValueError as exc:
+            raise ManifestImageError(
+                relative_path=relative_path,
+                detail=f"cannot read image dimensions: path={relative_path} error={exc}",
+            ) from exc
         item["width"], item["height"] = (width, height) if include_dimensions else (0, 0)
     return item
 

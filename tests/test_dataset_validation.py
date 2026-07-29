@@ -870,6 +870,42 @@ def test_verify_anomalib_rejects_undocumented_source_image_suffixes(
     )
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "mode", "color", "expected_format"),
+    [
+        ("val/good/val-good.png", "RGB", "white", "PNG"),
+        ("val/bad/val-bad.jpg", "RGB", "white", "JPEG"),
+        ("test/bad/test-bad.webp", "RGB", "white", "WEBP"),
+        ("ground_truth/val/bad/val-bad.png", "L", 255, "PNG"),
+    ],
+)
+def test_verify_anomalib_rejects_tiff_bytes_disguised_as_canonical_members(
+    tmp_path: Path,
+    relative_path: str,
+    mode: str,
+    color: str | int,
+    expected_format: str,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    Image.new(mode, (16, 12), color=color).save(tmp_path / relative_path, format="TIFF")
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert result["errors"] == [
+        {
+            "code": "invalid_image",
+            "message": (
+                "image encoding does not match its declared suffix: "
+                f"path={relative_path} expected={expected_format} actual=TIFF"
+            ),
+            "path": relative_path,
+            "expected_format": expected_format,
+            "actual_format": "TIFF",
+        }
+    ]
+
+
 def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
 
