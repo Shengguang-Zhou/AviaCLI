@@ -356,6 +356,81 @@ def test_source_import_rejects_invalid_classes_before_auth(
         handle_import_command(args)
 
 
+def test_anomalib_source_import_submits_canonical_binary_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _build_parser().parse_args(
+        [
+            "import",
+            "create",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            "datasets/mvtec-bottle/",
+            "--format",
+            "anomalib",
+            "--task-key",
+            "ad",
+        ]
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.api_from_args",
+        lambda _args: "https://avia.example/api/v1",
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.token_from_args",
+        lambda _args, *, api: "token",
+    )
+
+    def create_source_import(**kwargs):
+        captured.update(kwargs)
+        return {"status": "queued"}
+
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.create_source_import",
+        create_source_import,
+    )
+
+    assert handle_import_command(args) == 0
+    assert captured["payload"] == {
+        "source_kind": "object_prefix",
+        "uri": "datasets/mvtec-bottle/",
+        "format": "anomalib",
+        "task_key": "ad",
+        "classes": ["good", "bad"],
+        "auto_post_processing": True,
+    }
+
+
+def test_anomalib_source_import_rejects_user_class_override_before_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _build_parser().parse_args(
+        [
+            "import",
+            "create",
+            "--project",
+            "proj_123456789abc",
+            "--source",
+            "datasets/mvtec-bottle/",
+            "--format",
+            "anomalib",
+            "--task-key",
+            "ad",
+            "--class",
+            "good",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.imports.api_from_args",
+        lambda _args: pytest.fail("invalid class override reached auth resolution"),
+    )
+
+    with pytest.raises(SystemExit, match="only valid with --format yolo"):
+        handle_import_command(args)
+
+
 def test_human_readable_inspect_and_verify_output_carries_task_key(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -365,6 +440,7 @@ def test_human_readable_inspect_and_verify_output_carries_task_key(
         "file_count": 3,
         "image_count": 1,
         "label_count": 1,
+        "mask_count": 0,
         "total_bytes": 100,
     }
 
@@ -438,7 +514,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
     state_path.write_text(
         json.dumps(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "api": "http://127.0.0.1:8080/api/v1",
                 "phase": "completed",
                 "project_id": "proj_123456789abc",
@@ -466,8 +542,6 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "reason": "queued",
                     "dispatch_mode": "celery",
                     "worker_task_id": "task_123",
-                    "dataset_version_id": "dv_123",
-                    "version_ref": {"dataset_version_id": "dv_123"},
                 },
                 "files": {
                     "classes.txt": {
@@ -477,6 +551,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                         "sha256": "a" * 64,
                         "width": 0,
                         "height": 0,
+                        "content_type": "text/plain",
                         "object_key": "imports/imp_done/classes.txt",
                         "source_identity": {
                             "device": 1,

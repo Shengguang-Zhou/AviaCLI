@@ -76,7 +76,11 @@ against one canonical contract. Transport concurrency is tuned from the validate
 not the control-plane API host.
 
 Object-prefix imports accept only a bare NFC POSIX object path with a trailing slash, validated
-before authentication or HTTP. COCO polygon and RLE masks share one strict acceptance contract:
+before authentication or HTTP. YOLO source imports send the validated caller class list,
+Anomalib/AD automatically sends exactly `["good", "bad"]`, and COCO/ImageNet send an empty list;
+`--class` is YOLO-only. Source-import success requires the control plane's complete
+pre-materialization counters (`uploaded == file_count`, `image_count == streamed == 0`) rather
+than a reduced response shape. COCO polygon and RLE masks share one strict acceptance contract:
 one connected component, no holes, and pixel-exact reconstruction from one full YOLO contour.
 YOLO segment input follows AviaTraining/Ultralytics runtime semantics: official thin-bridge
 multi-segment walks are valid, while rasterizable crossing topology is surfaced as a structured
@@ -85,7 +89,19 @@ Anomalib uses one explicit training layout: `train/good`, `val/{good,bad}`,
 `test/{good,bad}`, and `ground_truth/{val,test}/bad/<same-stem>.png`. The CLI rejects original
 MVTec defect-name folders, `validation`, `_mask` filename adaptation, nested role directories,
 missing roles, and missing masks before creating an upload session. Its only AD taxonomy is
-`["good", "bad"]`.
+`["good", "bad"]`. Inspection, validation, manifest generation, and upload share one role
+inventory and report separate `image_count`, `label_count`, and `mask_count` values; Anomalib
+masks are never counted as source images or labels. Source suffixes are lowercase
+`.jpg | .jpeg | .png | .webp` and masks use lowercase `.png`. Decoded source encodings must be
+JPEG, PNG, or WebP exactly as declared by that suffix, and masks must decode as PNG; renamed
+BMP/TIFF bytes are invalid. YOLO, COCO, and ImageNet continue to preserve supported uppercase
+image suffixes while validating their decoded format case-insensitively. ImageNet builds one
+`(split, class)` image index before validating classes rather than rescanning the full inventory.
+
+Signed folder media types use one strict lowercase ASCII `token/token` contract with no
+parameters, whitespace, control characters, empty token, or extra slash. Import responses do
+not expose dataset-version identity before publication; only `succeeded` requires matching
+`dataset_version_id` and `version_ref.dataset_version_id`.
 
 With the local backend, `woodpeckerci/plugin-git:2.9.2` identifies the host `plugin-git` clone
 binary; it is not an OCI image pin. The clone disables LFS and partial clone. Its complete shallow

@@ -30,10 +30,7 @@ from avia_cli.core.uploads.api import (
     _post_json,
     _put_file_with_retries,
 )
-from avia_cli.core.uploads.manifest import (
-    _guess_content_type,
-    scan_source_manifest,
-)
+from avia_cli.core.uploads.manifest import scan_source_manifest
 from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_TERMINAL_STATUSES,
@@ -405,7 +402,7 @@ def _upload_validated_dataset(
             idempotency_key=idempotency_key,
         )
         state = {
-            "schema_version": 3,
+            "schema_version": 4,
             "phase": "session_pending",
             "api": api,
             "project_id": project_id,
@@ -424,6 +421,7 @@ def _upload_validated_dataset(
                     "sha256": str(item.get("sha256") or ""),
                     "width": int(item.get("width") or 0),
                     "height": int(item.get("height") or 0),
+                    "content_type": None,
                     "object_key": None,
                     "source_identity": dict(source_identities[str(item["relative_path"])]),
                 }
@@ -478,21 +476,19 @@ def _upload_validated_dataset(
     def stream_files_for(relative_paths: list[str]) -> list[dict[str, object]]:
         stream_files: list[dict[str, object]] = []
         for relative_path in relative_paths:
-            item = dict(file_by_relative.get(relative_path) or {})
-            if not item:
-                item = {"relative_path": relative_path}
-            item["relative_path"] = relative_path
             state_item = dict(state_files.get(relative_path) or {})
-            if state_item.get("sha256") and not item.get("sha256"):
-                item["sha256"] = state_item.get("sha256")
-            if state_item.get("size_bytes") and not item.get("size_bytes"):
-                item["size_bytes"] = state_item.get("size_bytes")
-            if state_item.get("width") and not item.get("width"):
-                item["width"] = state_item.get("width")
-            if state_item.get("height") and not item.get("height"):
-                item["height"] = state_item.get("height")
-            if not item.get("content_type"):
-                item["content_type"] = _guess_content_type(relative_path)
+            if not state_item:
+                raise RuntimeError(f"resume state has no file identity for {relative_path}")
+            item: dict[str, object] = {
+                "relative_path": relative_path,
+                "object_key": state_item["object_key"],
+                "size_bytes": state_item["size_bytes"],
+                "content_type": state_item["content_type"],
+                "sha256": state_item["sha256"],
+            }
+            if state_item["width"]:
+                item["width"] = state_item["width"]
+                item["height"] = state_item["height"]
             stream_files.append(item)
         return stream_files
 
@@ -604,6 +600,14 @@ def _upload_validated_dataset(
                 )
                 for item in pending:
                     file_by_relative[str(item["relative_path"])] = item
+                signing_files = [
+                    {
+                        "relative_path": str(item["relative_path"]),
+                        "size_bytes": int(item["size_bytes"]),
+                        "sha256": str(item["sha256"]),
+                    }
+                    for item in pending
+                ]
                 urls = upload_timing.time_call(
                     "batch_upload_urls",
                     _batch_upload_urls,
@@ -613,7 +617,7 @@ def _upload_validated_dataset(
                     token=token,
                     project_id=project_id,
                     import_id=import_id,
-                    files=pending,
+                    files=signing_files,
                     timeout=float(args.batch_upload_url_timeout),
                     retries=int(args.batch_upload_url_retries),
                 )
@@ -722,6 +726,7 @@ def _upload_validated_dataset(
                         {
                             "uploaded": True,
                             "object_key": signed.get("object_key"),
+                            "content_type": signed.get("content_type"),
                             "sha256": str(file_by_relative[relative_path].get("sha256") or ""),
                             "size_bytes": int(
                                 file_by_relative[relative_path].get("size_bytes") or 0
@@ -818,6 +823,9 @@ def _upload_validated_dataset(
         "task_key": str(args.task_key),
         "file_count": int(manifest["file_count"]),
         "total_bytes": int(manifest["total_bytes"]),
+        "image_count": int(manifest["image_count"]),
+        "label_count": int(manifest["label_count"]),
+        "mask_count": int(manifest["mask_count"]),
         "complete": complete,
         "upload_timing": upload_timing.summary(),
         "state_path": str(_state_path(state_dir, project_id, idempotency_key)),

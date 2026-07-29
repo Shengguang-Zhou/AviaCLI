@@ -86,8 +86,7 @@ avia import create \
 Validation fully decodes every image and rejects all symbolic links in the source tree, including
 broken links and linked directories. The shared scanner also rejects FIFOs, sockets, devices, and
 every other non-regular member instead of silently omitting it. Inspection, verification, and
-upload always process the complete dataset. The historical archive-upload path was removed:
-folder sessions are the one durable, idempotent upload protocol.
+upload always process the complete dataset through folder sessions.
 
 After validation, each upload is bound to the same regular-file identity used to compute its
 SHA-256 and dimensions. Hashing and PUT retries use an `O_NOFOLLOW`
@@ -114,12 +113,19 @@ official training data.
 Classification label files contain one unique class id per row. Anomalib
 validation requires exactly `train/good`, `val/{good,bad}`, `test/{good,bad}`,
 and one `ground_truth/{val,test}/bad/<same-stem>.png` mask per bad evaluation
-sample. Role images are direct children and use JPG, JPEG, PNG, or WebP; masks
-use lowercase `.png`. Original MVTec defect-name directories, `validation`,
-`_mask` suffix adaptation, missing roles, and nested role directories are
-rejected. Root documentation is limited to README, LICENSE, and
-`source_records.json`, matching the importer. Validation reports the sole binary
-taxonomy `["good", "bad"]`.
+sample. Role images are direct children and use lowercase `.jpg`, `.jpeg`, `.png`,
+or `.webp`; masks use lowercase `.png`. The decoded encoding must match that suffix
+exactly; renamed BMP/TIFF data is rejected, and masks must decode as PNG. YOLO,
+COCO, and ImageNet preserve supported uppercase image suffixes and validate the
+decoded encoding against their case-normalized suffix. ImageNet builds one
+`(split, class)` index before class validation. Original MVTec
+defect-name directories, `validation`, `_mask` suffix adaptation, missing roles,
+and nested role directories are rejected. Root documentation is limited to
+README, LICENSE, and `source_records.json`, matching the importer. Validation
+reports the sole binary taxonomy `["good", "bad"]`. The same role inventory
+drives inspection, validation, manifest generation, and upload JSON: source
+samples are `image_count`, YOLO/COCO annotations are `label_count`, and
+Anomalib `ground_truth/**` members are exclusively `mask_count`.
 Validation errors exit non-zero; missing labels or unknown classes are never warnings.
 For multilabel classification, an existing empty label file is an explicit
 negative sample; an absent label file remains an error.
@@ -133,7 +139,17 @@ images with the same dimensions as their defect image.
 
 API bases are canonical absolute `http(s)` URLs without credentials, queries, fragments,
 whitespace, default ports, or trailing slashes. Session, signed-URL, batch-complete, finalization,
-and poll responses use exact field and status decoders; historical aliases are rejected. Auth
+and poll responses use exact field and status decoders; historical aliases are rejected.
+Object-prefix imports bind classes to the selected format: YOLO uses the validated `--class`
+values, Anomalib/AD automatically sends the sole `["good", "bad"]` taxonomy, and COCO/ImageNet
+send no classes. `--class` is rejected for every non-YOLO format. A successful source-import
+response must carry the complete pre-materialization progress contract, including
+`uploaded == file_count`, `image_count == 0`, and `streamed == 0`; the client does not accept a
+reduced or historical response shape.
+Signed media types are exact lowercase ASCII `token/token` values without parameters,
+whitespace, controls, empty tokens, or extra slashes. Pre-publication responses cannot expose a
+dataset-version identity, while a succeeded poll requires matching `dataset_version_id` and
+`version_ref.dataset_version_id`. Auth
 refresh occurs only for `401` or explicit `token_expired`, never `403`, and an explicit token is
 never associated with environment password or refresh-token credentials from another identity.
 

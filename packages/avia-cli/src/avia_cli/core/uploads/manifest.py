@@ -2,32 +2,34 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import mimetypes
 import unicodedata
 from pathlib import Path
 
+from avia_cli.core.uploads.inventory import (
+    build_role_inventory,
+    is_dataset_image_path,
+    requires_lowercase_media_suffix,
+)
+from avia_cli.core.uploads.image_validation import (
+    ImageEncodingMismatch,
+    decoded_image_size,
+)
 from avia_cli.core.uploads.metadata import read_yolo_class_names
 
 
 class ManifestImageError(RuntimeError):
-    def __init__(self, *, relative_path: str, detail: str) -> None:
+    def __init__(
+        self,
+        *,
+        relative_path: str,
+        detail: str,
+        expected_format: str | None = None,
+        actual_format: str | None = None,
+    ) -> None:
         self.relative_path = relative_path
+        self.expected_format = expected_format
+        self.actual_format = actual_format
         super().__init__(detail)
-
-
-def _guess_content_type(path: str) -> str:
-    content_type, _encoding = mimetypes.guess_type(path)
-    return content_type or "application/octet-stream"
-
-
-def _is_image_path(path: str) -> bool:
-    return Path(str(path or "")).suffix.lower() in {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".bmp",
-        ".webp",
-    }
 
 
 def is_client_state_path(relative_path: Path) -> bool:
@@ -35,38 +37,43 @@ def is_client_state_path(relative_path: Path) -> bool:
 
 
 def _image_size_file(path: Path) -> tuple[int, int]:
-    try:
-        from PIL import Image
-
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            image.load()
-            width, height = int(image.width), int(image.height)
-        if width <= 0 or height <= 0:
-            raise ValueError("image dimensions must be positive")
-        return width, height
-    except Exception as exc:
-        raise RuntimeError(f"cannot read image dimensions for {path}: {exc}") from exc
+    return decoded_image_size(path)
 
 
 def _manifest_item(
     *,
     source_root: Path,
     path: Path,
+    format_name: str,
     include_dimensions: bool = True,
 ) -> dict[str, object]:
-    relative_path = _canonical_relative_path(path.relative_to(source_root))
+    relative_path = _canonical_relative_path(
+        path.relative_to(source_root),
+        format_name=format_name,
+    )
     item: dict[str, object] = {
         "relative_path": relative_path,
         "size_bytes": int(path.stat().st_size),
-        "content_type": _guess_content_type(relative_path),
     }
-    if _is_image_path(relative_path):
+    if is_dataset_image_path(relative_path):
         try:
             width, height = _image_size_file(path)
-        except RuntimeError as exc:
-            raise ManifestImageError(relative_path=relative_path, detail=str(exc)) from exc
+        except ImageEncodingMismatch as exc:
+            raise ManifestImageError(
+                relative_path=relative_path,
+                detail=(
+                    "image encoding does not match its declared suffix: "
+                    f"path={relative_path} expected={exc.expected_format} "
+                    f"actual={exc.actual_format}"
+                ),
+                expected_format=exc.expected_format,
+                actual_format=exc.actual_format,
+            ) from exc
+        except ValueError as exc:
+            raise ManifestImageError(
+                relative_path=relative_path,
+                detail=f"cannot read image dimensions: path={relative_path} error={exc}",
+            ) from exc
         item["width"], item["height"] = (width, height) if include_dimensions else (0, 0)
     return item
 
@@ -76,7 +83,7 @@ def scan_source_manifest(
     *,
     include_dimensions: bool = True,
     hash_workers: int = 1,
-    format_name: str = "",
+    format_name: str,
 ) -> dict[str, object]:
     requested_root = Path(root).expanduser()
     if requested_root.is_symlink():
@@ -103,7 +110,7 @@ def scan_source_manifest(
     paths: list[Path] = []
     for path in sorted(source_root.rglob("*")):
         relative = path.relative_to(source_root)
-        relative_path = _canonical_relative_path(relative)
+        relative_path = _canonical_relative_path(relative, format_name=format_name)
         if path.is_symlink():
             _raise_manifest_error(
                 "dataset_symlink",
@@ -132,6 +139,7 @@ def scan_source_manifest(
         return _manifest_item(
             source_root=source_root,
             path=path,
+            format_name=format_name,
             include_dimensions=include_dimensions,
         )
 
@@ -144,13 +152,18 @@ def scan_source_manifest(
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             files = list(executor.map(build_item, paths))
 
+    inventory = build_role_inventory(
+        (str(item["relative_path"]) for item in files),
+        format_name=format_name,
+    )
     manifest: dict[str, object] = {
         "source": str(source_root),
         "file_count": len(files),
         "total_bytes": sum(int(item.get("size_bytes") or 0) for item in files),
         "files": files,
+        **inventory.counts(),
     }
-    if str(format_name or "").strip().lower() == "yolo":
+    if format_name == "yolo":
         manifest["classes"] = read_yolo_class_names(source_root)
     return manifest
 
@@ -164,9 +177,10 @@ def _raise_manifest_error(code: str, message: str, *, path: str) -> None:
     )
 
 
-def _canonical_relative_path(relative: Path) -> str:
+def _canonical_relative_path(relative: Path, *, format_name: str) -> str:
     raw = relative.as_posix()
     normalized = unicodedata.normalize("NFC", raw)
+    suffix = relative.suffix
     invalid = (
         not raw
         or raw != normalized
@@ -175,6 +189,10 @@ def _canonical_relative_path(relative: Path) -> str:
         or raw.startswith("/")
         or any(part in {"", ".", ".."} or part != part.strip() for part in raw.split("/"))
         or any(unicodedata.category(character) == "Cc" for character in raw)
+        or (
+            requires_lowercase_media_suffix(raw, format_name=format_name)
+            and suffix != suffix.lower()
+        )
     )
     if invalid:
         _raise_manifest_error(

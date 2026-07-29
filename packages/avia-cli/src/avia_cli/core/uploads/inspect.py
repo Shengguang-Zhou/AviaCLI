@@ -8,20 +8,20 @@ from urllib import parse
 
 from avia_cli.core.uploads.api import _project_path, _request_json_with_retries
 from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES, require_format_task
-from avia_cli.core.uploads.manifest import _is_image_path, scan_source_manifest
+from avia_cli.core.uploads.inventory import require_manifest_inventory
+from avia_cli.core.uploads.manifest import scan_source_manifest
 from avia_cli.core.atomic_file import read_regular_file
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_STATUSES,
-    parse_version_ref_identity,
+    validate_version_ref_phase,
 )
 from avia_cli.core.uploads.state import _safe_state_segment, _validate_state
 from avia_cli.core.uploads.validation import validate_dataset
 
 _TERMINAL_STATUSES = {"succeeded", "failed"}
-_INGESTION_JOB_FIELDS = {
+_INGESTION_JOB_BASE_FIELDS = {
     "created_at",
     "dataset_validation",
-    "dataset_version_id",
     "error",
     "import_id",
     "job_type",
@@ -29,8 +29,50 @@ _INGESTION_JOB_FIELDS = {
     "progress",
     "status",
     "updated_at",
-    "version_ref",
 }
+_INGESTION_JOB_IDENTITY_FIELDS = {"dataset_version_id", "version_ref"}
+
+
+def _manifest_image_failure(
+    *,
+    source: str | Path,
+    format_name: str,
+    task_key: str,
+    error: RuntimeError,
+) -> dict[str, Any]:
+    expected_format = getattr(error, "expected_format", None)
+    actual_format = getattr(error, "actual_format", None)
+    details = (
+        {
+            "expected_format": expected_format,
+            "actual_format": actual_format,
+        }
+        if isinstance(expected_format, str) and isinstance(actual_format, str)
+        else {}
+    )
+    return {
+        "source": str(Path(source).expanduser().resolve()),
+        "format": format_name,
+        "task_key": task_key,
+        "file_count": 0,
+        "image_count": 0,
+        "label_count": 0,
+        "mask_count": 0,
+        "total_bytes": 0,
+        "classes": _manifest_classes({}, format_name=format_name),
+        "status": "failed",
+        "error_count": 1,
+        "warning_count": 0,
+        "errors": [
+            {
+                "code": "invalid_image",
+                "message": str(error),
+                "path": str(getattr(error, "relative_path", "")),
+                **details,
+            }
+        ],
+        "warnings": [],
+    }
 
 
 def inspect_dataset(
@@ -49,27 +91,12 @@ def inspect_dataset(
             format_name=format_name,
         )
     except RuntimeError as exc:
-        return {
-            "source": str(Path(source).expanduser().resolve()),
-            "format": format_name,
-            "task_key": task_key,
-            "file_count": 0,
-            "image_count": 0,
-            "label_count": 0,
-            "total_bytes": 0,
-            "classes": _manifest_classes({}, format_name=format_name),
-            "status": "failed",
-            "error_count": 1,
-            "warning_count": 0,
-            "errors": [
-                {
-                    "code": "invalid_image",
-                    "message": str(exc),
-                    "path": str(getattr(exc, "relative_path", "")),
-                }
-            ],
-            "warnings": [],
-        }
+        return _manifest_image_failure(
+            source=source,
+            format_name=format_name,
+            task_key=task_key,
+            error=exc,
+        )
     return _manifest_summary(manifest, format_name=format_name, task_key=task_key)
 
 
@@ -89,27 +116,12 @@ def verify_dataset(
             format_name=format_name,
         )
     except RuntimeError as exc:
-        return {
-            "source": str(Path(source).expanduser().resolve()),
-            "format": format_name,
-            "task_key": task_key,
-            "file_count": 0,
-            "image_count": 0,
-            "label_count": 0,
-            "total_bytes": 0,
-            "classes": _manifest_classes({}, format_name=format_name),
-            "status": "failed",
-            "error_count": 1,
-            "warning_count": 0,
-            "errors": [
-                {
-                    "code": "invalid_image",
-                    "message": str(exc),
-                    "path": str(getattr(exc, "relative_path", "")),
-                }
-            ],
-            "warnings": [],
-        }
+        return _manifest_image_failure(
+            source=source,
+            format_name=format_name,
+            task_key=task_key,
+            error=exc,
+        )
     summary = _manifest_summary(manifest, format_name=format_name, task_key=task_key)
     classes, errors, warnings = validate_dataset(
         source_root=Path(str(manifest["source"])),
@@ -172,25 +184,14 @@ def _manifest_summary(
     manifest: dict[str, object], *, format_name: str, task_key: str
 ) -> dict[str, Any]:
     files = [dict(item) for item in list(manifest.get("files") or []) if isinstance(item, dict)]
-    image_paths = [
-        str(item.get("relative_path") or "")
-        for item in files
-        if _is_image_path(str(item.get("relative_path") or ""))
-    ]
-    label_paths = [
-        str(item.get("relative_path") or "")
-        for item in files
-        if str(item.get("relative_path") or "").startswith("labels/")
-        and str(item.get("relative_path") or "").endswith(".txt")
-    ]
+    inventory = require_manifest_inventory(manifest, format_name=format_name)
     return {
         "source": str(manifest["source"]),
-        "format": str(format_name).lower(),
-        "task_key": str(task_key).lower(),
-        "file_count": int(manifest.get("file_count") or 0),
-        "total_bytes": int(manifest.get("total_bytes") or 0),
-        "image_count": len(image_paths),
-        "label_count": len(label_paths),
+        "format": format_name,
+        "task_key": task_key,
+        "file_count": int(manifest["file_count"]),
+        "total_bytes": int(manifest["total_bytes"]),
+        **inventory.counts(),
         "classes": _manifest_classes(manifest, format_name=format_name),
         "sample_files": [str(item.get("relative_path") or "") for item in files[:10]],
     }
@@ -246,10 +247,16 @@ def _list_server_imports(
 
 
 def _validate_server_import(item: dict[str, Any]) -> None:
-    if set(item) != _INGESTION_JOB_FIELDS:
+    actual_fields = set(item)
+    expected_fields = (
+        _INGESTION_JOB_BASE_FIELDS | _INGESTION_JOB_IDENTITY_FIELDS
+        if _INGESTION_JOB_IDENTITY_FIELDS.issubset(actual_fields)
+        else _INGESTION_JOB_BASE_FIELDS
+    )
+    if actual_fields != expected_fields:
         raise RuntimeError(
             "ingestion-jobs entry fields must be exact: "
-            f"expected={sorted(_INGESTION_JOB_FIELDS)} actual={sorted(item)}"
+            f"expected={sorted(expected_fields)} actual={sorted(item)}"
         )
     for key in ("import_id", "job_type", "object_key"):
         value = item.get(key)
@@ -261,7 +268,14 @@ def _validate_server_import(item: dict[str, Any]) -> None:
     dataset_validation = item.get("dataset_validation")
     if dataset_validation is not None and not isinstance(dataset_validation, dict):
         raise RuntimeError("ingestion-jobs entry dataset_validation must be null or an object")
-    parse_version_ref_identity(item, label="ingestion-jobs entry")
+    status = item.get("status")
+    if status not in IMPORT_STATUSES:
+        raise RuntimeError(f"ingestion-jobs entry has unsupported status: {status!r}")
+    validate_version_ref_phase(
+        item,
+        status=str(status),
+        label="ingestion-jobs entry",
+    )
     for key in ("created_at", "updated_at"):
         value = item.get(key)
         if value is not None and (
@@ -278,7 +292,8 @@ def _compact_server_import(item: dict[str, Any]) -> dict[str, Any]:
         "object_key": item["object_key"],
     }
     for key in ("dataset_version_id", "version_ref", "created_at", "updated_at"):
-        compact[key] = item[key]
+        if key in item:
+            compact[key] = item[key]
     progress = item.get("progress")
     if isinstance(progress, dict):
         compact["progress"] = {

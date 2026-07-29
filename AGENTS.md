@@ -7,6 +7,12 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 
 - Dataset format and task are explicit and must match the exact public matrix documented in
   `README.md`; aliases and inferred defaults are invalid.
+- Object-prefix source imports use one format-bound class contract: YOLO sends the caller's
+  validated class list, Anomalib/AD automatically sends exactly `["good", "bad"]`, and
+  COCO/ImageNet send an empty list. `--class` is a YOLO-only option. The accepted source-import
+  progress is the control plane's exact pre-materialization shape, including
+  `uploaded == file_count`, `image_count == 0`, and `streamed == 0`; missing or extra counters
+  are protocol errors.
 - Folder uploads generate a canonical lowercase UUIDv4 `idempotency_key`. A versioned
   pending-session state containing the exact request payload is atomically durable before the
   first session POST. `--resume` replays that payload and key after response loss.
@@ -15,7 +21,14 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   stored regular-file identities; every file already marked uploaded is rehashed through its
   verified descriptor and must match the persisted SHA-256 before any network request.
 - Every image is fully decoded before any HTTP request or state write. YOLO
-  validation also compares decoded dimensions with manifest dimensions when present.
+  validation also compares decoded dimensions with manifest dimensions when present. The decoded
+  Pillow format must exactly match the case-normalized suffix: JPG/JPEG is `JPEG`, PNG is `PNG`,
+  WebP is `WEBP`, BMP is `BMP`, and TIF/TIFF is `TIFF`; renamed encodings are invalid.
+  YOLO, COCO, and ImageNet preserve supported uppercase image suffixes. Anomalib alone requires
+  lowercase source suffixes and lowercase `.png` masks.
+- One format-aware role inventory owns inspection, validation, manifest, and upload counts.
+  Public JSON exposes `image_count`, `label_count`, and `mask_count`; Anomalib
+  `ground_truth/**` members count only as masks and never inflate image or label counts.
 - Anomalib masks use Pillow's non-deprecated `get_flattened_data()` API, so the package requires
   Pillow 12.1 or newer; dependency metadata must not claim support for an older Pillow ABI.
 - Anomalib has one trainable folder contract: `train/good`, both
@@ -23,8 +36,12 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   `ground_truth/{val,test}/bad`. Original MVTec defect-name directories, `validation`, `_mask`
   suffixes, alternate split derivation, and nested role directories are invalid rather than
   adapted. Root provenance files match the importer exactly: README, LICENSE, and
-  `source_records.json` only. Validation, inspection, and folder-session payloads expose only
-  `["good", "bad"]`.
+  `source_records.json` only. Its source members decode only as JPEG, PNG, or WebP according to
+  their suffix, and every mask decodes as PNG; renaming BMP/TIFF bytes to an allowed suffix is
+  invalid. Validation, inspection, and folder-session payloads expose only `["good", "bad"]`.
+- ImageNet validation builds the complete `(split, class)` image index once. Per-class rescans of
+  the full image inventory are forbidden because they make validation
+  `O(classes × images)` instead of `O(classes + images)`.
 - The published package supports Python 3.10 through 3.12. The workspace, wheel metadata, NumPy
   1.x dependency, lock file, classifiers, internal CI, and release workflow must enforce that one
   range. Quality runs on all three interpreters; release artifacts are built and published once.
@@ -51,18 +68,27 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 - Folder PUTs use one exact, case-insensitive header contract. Never retry invalid URLs, headers,
   source identities, or programmer errors. Retry only the typed transport
   error and HTTP 408/429/500/502/503/504 responses.
+- Folder signing requests contain only `relative_path`, `size_bytes`, and lowercase SHA-256.
+  Content type is server-owned canonical metadata: the client validates the signed response and
+  exact `Content-Type` header, persists only that server value after a successful PUT, and reuses
+  it for batch completion. Browser/host MIME guesses, dimensions, and completion metadata must
+  never be echoed into the signing request or substituted during resume. The one media-type
+  parser accepts exactly lowercase ASCII `token/token` without whitespace, parameters, controls,
+  empty sides, or additional slashes.
 - A failed concurrent PUT or batch-complete request must not return while sibling operations are
   still running. Drain them, persist every completed side effect to resume state, expose all
   additional failures, then raise one structured aggregate error.
-- Folder sessions are the only dataset-byte upload protocol. The non-idempotent archive path and
-  its multipart implementation are removed rather than retained as historical compatibility code.
+- Folder sessions are the only dataset-byte upload protocol.
 - API bases, server response fields, import identifiers, remote object identities, and import
   statuses have one canonical contract. Reject unknown fields, duplicate/missing signed entries,
   mismatches, redirects, and historical status aliases.
 - `POST /projects/{project_id}/imports/{import_id}/complete` has one
   `avia.import-complete-queued/v1` response. A retry after response loss must decode the exact same
   persisted queued receipt, including non-empty `dispatch_mode` and `worker_task_id`; the client
-  never weakens this contract or treats a partial replay response as success.
+  never weakens this contract or treats a partial replay response as success. Pending, uploaded,
+  queued, running, and failed responses cannot expose a dataset-version identity; the client
+  accepts only absent or paired-null identity fields there. A succeeded poll requires matching
+  non-empty `dataset_version_id` and `version_ref.dataset_version_id`.
 - Derive hashing/batching parameters locally. Probe transport RTT only against the first validated
   API-issued signed storage URL with a side-effect-free HEAD using the exact explicit proxy
   snapshot that PUT will use; never treat the control-plane API host as the storage host. A

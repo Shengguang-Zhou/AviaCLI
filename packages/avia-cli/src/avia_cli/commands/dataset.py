@@ -89,7 +89,7 @@ def _print_inspect_result(result: dict[str, object], *, json_output: bool) -> No
     print(
         f"{result['format']}/{result['task_key']} dataset: {result['file_count']} files, "
         f"{result['image_count']} images, {result['label_count']} labels, "
-        f"{result['total_bytes']} bytes"
+        f"{result['mask_count']} masks, {result['total_bytes']} bytes"
     )
 
 

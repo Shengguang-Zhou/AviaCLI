@@ -6,7 +6,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from avia_cli.core.uploads.manifest import _is_image_path
+from avia_cli.core.uploads.inventory import DatasetRoleInventory
 from avia_cli.core.uploads.metadata import read_yolo_metadata
 from avia_cli.core.uploads.validation_common import (
     error,
@@ -27,6 +27,7 @@ def validate_yolo(
     *,
     source_root: Path,
     manifest: dict[str, object],
+    inventory: DatasetRoleInventory,
     task_key: str,
     declared_classes: list[str] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -49,10 +50,12 @@ def validate_yolo(
     files = [dict(item) for item in list(manifest.get("files") or []) if isinstance(item, dict)]
     file_by_relative = {str(item.get("relative_path") or ""): item for item in files}
     relative_paths = set(file_by_relative)
+    image_paths = list(inventory.image_paths)
+    label_paths = list(inventory.label_paths)
+    role_paths = set(image_paths) | set(label_paths)
     for relative_path in sorted(relative_paths):
         allowed = (
-            (relative_path.startswith("images/") and _is_image_path(relative_path))
-            or (relative_path.startswith("labels/") and relative_path.endswith(".txt"))
+            relative_path in role_paths
             or relative_path in _YOLO_METADATA_NAMES
             or is_document_path(relative_path)
         )
@@ -64,12 +67,6 @@ def validate_yolo(
                     path=relative_path,
                 )
             )
-    image_paths = sorted(
-        path for path in relative_paths if path.startswith("images/") and _is_image_path(path)
-    )
-    label_paths = sorted(
-        path for path in relative_paths if path.startswith("labels/") and path.endswith(".txt")
-    )
     if not image_paths:
         errors.append(error("no_images", "YOLO dataset has no images"))
     if task_key == "pose":

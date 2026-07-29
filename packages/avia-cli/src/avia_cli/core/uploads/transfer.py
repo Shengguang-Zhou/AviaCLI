@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from urllib import parse
 
 from avia_cli.core.errors import _UploadTransportError
+from avia_cli.core.uploads.media_types import require_canonical_media_type
 from avia_cli.core.uploads.source_file import VerifiedSourceFile
 
 _HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
@@ -55,6 +56,9 @@ def _validated_upload_headers(
         value = raw_value
         if not _HEADER_NAME.fullmatch(name):
             raise RuntimeError("upload required_headers contains an invalid name")
+        normalized = name.lower()
+        if normalized == "content-type":
+            require_canonical_media_type(value, label="upload Content-Type")
         if value != value.strip() or any(
             ord(character) < 32 or ord(character) == 127 for character in value
         ):
@@ -65,7 +69,6 @@ def _validated_upload_headers(
             raise RuntimeError(
                 "upload required_headers value must be ISO-8859-1 encodable"
             ) from exc
-        normalized = name.lower()
         if normalized in seen:
             raise RuntimeError(f"upload required_headers duplicates {name} case-insensitively")
         seen.add(normalized)

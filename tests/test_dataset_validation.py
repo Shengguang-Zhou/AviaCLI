@@ -78,6 +78,35 @@ def test_verify_yolo_accepts_exact_valid_task_rows(
     assert result["warning_count"] == 0
 
 
+def test_verify_yolo_accepts_tiff_images(tmp_path: Path) -> None:
+    _write_image(tmp_path / "images" / "train" / "sample.tiff")
+    label_path = tmp_path / "labels" / "train" / "sample.txt"
+    label_path.parent.mkdir(parents=True, exist_ok=True)
+    label_path.write_text("0 0.5 0.5 0.25 0.25\n", encoding="utf-8")
+    (tmp_path / "data.yaml").write_text("names: [aircraft]\n", encoding="utf-8")
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+    tiff_item = next(item for item in manifest["files"] if item["relative_path"].endswith(".tiff"))
+    assert (tiff_item["width"], tiff_item["height"]) == (16, 12)
+    assert "content_type" not in tiff_item
+
+
+def test_verify_yolo_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "images" / "train" / "sample.png").rename(
+        tmp_path / "images" / "train" / "sample.PNG"
+    )
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+    assert "images/train/sample.PNG" in {item["relative_path"] for item in manifest["files"]}
+
+
 def test_verify_yolo_pose_uses_exact_kpt_shape(tmp_path: Path) -> None:
     _write_yolo_dataset(
         tmp_path,
@@ -440,6 +469,19 @@ def _write_coco_dataset(root: Path, *, task_key: str, include_task_field: bool =
     (annotations / "instances.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_verify_coco_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    (tmp_path / "images" / "sample.png").rename(tmp_path / "images" / "sample.PNG")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["images"][0]["file_name"] = "images/sample.PNG"
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "ok"
+
+
 @pytest.mark.parametrize("task_key", ["detect", "segment", "pose"])
 def test_verify_coco_enforces_task_specific_fields(tmp_path: Path, task_key: str) -> None:
     _write_coco_dataset(tmp_path, task_key=task_key)
@@ -490,7 +532,7 @@ def test_verify_coco_rejects_control_characters_in_file_name(tmp_path: Path) -> 
     assert any(item["code"] == "invalid_coco_file_name" for item in result["errors"])
 
 
-def test_verify_coco_resolves_standard_split_directory_file_names(tmp_path: Path) -> None:
+def test_verify_coco_rejects_basename_lookup_across_split_directories(tmp_path: Path) -> None:
     _write_coco_dataset(tmp_path, task_key="detect")
     (tmp_path / "images").rename(tmp_path / "train2017")
     annotation_path = tmp_path / "annotations" / "instances.json"
@@ -500,7 +542,15 @@ def test_verify_coco_resolves_standard_split_directory_file_names(tmp_path: Path
 
     result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
 
-    assert result["status"] == "ok"
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "invalid_image" and item["file_name"] == "sample.png"
+        for item in result["errors"]
+    )
+    assert any(
+        item["code"] == "orphan_coco_image" and item["path"] == "train2017/sample.png"
+        for item in result["errors"]
+    )
 
 
 def test_verify_coco_does_not_resolve_images_from_hidden_client_state(tmp_path: Path) -> None:
@@ -719,6 +769,54 @@ def test_verify_imagenet_requires_consistent_class_directories(tmp_path: Path) -
     assert result["classes"] == ["aircraft"]
 
 
+def test_verify_imagenet_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
+    _write_imagenet_dataset(tmp_path)
+    (tmp_path / "train" / "aircraft" / "a.png").rename(tmp_path / "train" / "aircraft" / "a.PNG")
+    (tmp_path / "val" / "aircraft" / "b.png").rename(tmp_path / "val" / "aircraft" / "b.PNG")
+
+    result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_imagenet_indexes_images_once_instead_of_scanning_per_class(
+    tmp_path: Path,
+) -> None:
+    from avia_cli.core.uploads.inventory import DatasetRoleInventory
+    from avia_cli.core.uploads.validation_folders import validate_imagenet
+
+    class CountingImagePaths:
+        def __init__(self, values: tuple[str, ...]) -> None:
+            self.values = values
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return iter(self.values)
+
+    class_count = 12
+    image_paths: list[str] = []
+    for index in range(class_count):
+        class_name = f"class-{index:02d}"
+        for split in ("train", "val"):
+            relative = f"{split}/{class_name}/{split}.png"
+            image_paths.append(relative)
+            _write_image(tmp_path / relative)
+    counted_paths = CountingImagePaths(tuple(image_paths))
+    inventory = DatasetRoleInventory(
+        format_name="imagenet",
+        image_paths=counted_paths,  # type: ignore[arg-type]
+        label_paths=(),
+        mask_paths=(),
+    )
+
+    classes, errors = validate_imagenet(tmp_path, inventory=inventory)
+
+    assert len(classes) == class_count
+    assert errors == []
+    assert counted_paths.iterations == 2
+
+
 def test_verify_imagenet_does_not_count_images_from_hidden_client_state(tmp_path: Path) -> None:
     _write_image(tmp_path / "train" / "aircraft" / ".avia" / "only.png")
     _write_image(tmp_path / "val" / "aircraft" / ".avia" / "only.png")
@@ -759,6 +857,22 @@ def _write_anomalib_dataset(root: Path) -> None:
     _write_mask(root / "ground_truth" / "test" / "bad" / "test-bad.png")
 
 
+def _write_mvtec_small_corpus(root: Path) -> None:
+    role_counts = {
+        ("train", "good"): 8,
+        ("val", "good"): 2,
+        ("val", "bad"): 3,
+        ("test", "good"): 4,
+        ("test", "bad"): 3,
+    }
+    for (split, class_name), count in role_counts.items():
+        for index in range(count):
+            stem = f"{split}-{class_name}-{index:02d}"
+            _write_image(root / split / class_name / f"{stem}.png")
+            if class_name == "bad":
+                _write_mask(root / "ground_truth" / split / "bad" / f"{stem}.png")
+
+
 def test_verify_anomalib_accepts_only_complete_training_structure(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
 
@@ -766,7 +880,104 @@ def test_verify_anomalib_accepts_only_complete_training_structure(tmp_path: Path
 
     assert result["status"] == "ok"
     assert result["classes"] == ["good", "bad"]
+    assert result["image_count"] == 5
+    assert result["label_count"] == 0
+    assert result["mask_count"] == 2
     assert result["warning_count"] == 0
+
+
+def test_mvtec_small_corpus_has_one_canonical_role_inventory(tmp_path: Path) -> None:
+    _write_mvtec_small_corpus(tmp_path)
+
+    manifest = scan_source_manifest(tmp_path, format_name="anomalib")
+    inspected = inspect_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+    verified = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert verified["status"] == "ok"
+    for payload in (manifest, inspected, verified):
+        assert payload["image_count"] == 20
+        assert payload["label_count"] == 0
+        assert payload["mask_count"] == 6
+
+
+def test_non_ad_formats_keep_format_aware_inventory_counts(tmp_path: Path) -> None:
+    yolo = tmp_path / "yolo"
+    coco = tmp_path / "coco"
+    imagenet = tmp_path / "imagenet"
+    _write_yolo_dataset(yolo, label="0 0.5 0.5 0.25 0.25\n")
+    _write_coco_dataset(coco, task_key="detect")
+    _write_imagenet_dataset(imagenet)
+
+    expected = {
+        "yolo": (yolo, "detect", 1, 1),
+        "coco": (coco, "detect", 1, 1),
+        "imagenet": (imagenet, "classify", 2, 0),
+    }
+    for format_name, (source, task_key, image_count, label_count) in expected.items():
+        result = verify_dataset(
+            source=source,
+            format_name=format_name,
+            task_key=task_key,
+        )
+        assert result["status"] == "ok"
+        assert result["image_count"] == image_count
+        assert result["label_count"] == label_count
+        assert result["mask_count"] == 0
+
+
+@pytest.mark.parametrize("suffix", (".bmp", ".tif", ".tiff"))
+def test_verify_anomalib_rejects_undocumented_source_image_suffixes(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "val" / "bad" / "val-bad.jpg").unlink()
+    relative_path = f"val/bad/val-bad{suffix}"
+    _write_image(tmp_path / relative_path)
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "unexpected_anomalib_member" and item.get("path") == relative_path
+        for item in result["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "mode", "color", "expected_format"),
+    [
+        ("val/good/val-good.png", "RGB", "white", "PNG"),
+        ("val/bad/val-bad.jpg", "RGB", "white", "JPEG"),
+        ("test/bad/test-bad.webp", "RGB", "white", "WEBP"),
+        ("ground_truth/val/bad/val-bad.png", "L", 255, "PNG"),
+    ],
+)
+def test_verify_anomalib_rejects_tiff_bytes_disguised_as_canonical_members(
+    tmp_path: Path,
+    relative_path: str,
+    mode: str,
+    color: str | int,
+    expected_format: str,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    Image.new(mode, (16, 12), color=color).save(tmp_path / relative_path, format="TIFF")
+
+    result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+    assert result["status"] == "failed"
+    assert result["errors"] == [
+        {
+            "code": "invalid_image",
+            "message": (
+                "image encoding does not match its declared suffix: "
+                f"path={relative_path} expected={expected_format} actual=TIFF"
+            ),
+            "path": relative_path,
+            "expected_format": expected_format,
+            "actual_format": "TIFF",
+        }
+    ]
 
 
 def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> None:
@@ -775,6 +986,9 @@ def test_inspect_anomalib_reports_canonical_binary_taxonomy(tmp_path: Path) -> N
     result = inspect_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
     assert result["classes"] == ["good", "bad"]
+    assert result["image_count"] == 5
+    assert result["label_count"] == 0
+    assert result["mask_count"] == 2
 
 
 @pytest.mark.parametrize("inspect", [inspect_dataset, verify_dataset])
@@ -886,9 +1100,8 @@ def test_verify_anomalib_rejects_orphan_mask(tmp_path: Path) -> None:
         "test/crack/unexpected.png",
         "ground_truth/crack/unexpected_mask.png",
         "ground_truth/test/bad/test-bad_mask.png",
-        "ground_truth/test/bad/test-bad.PNG",
         "test/good/nested/unexpected.png",
-        "test/bad/unsupported.bmp",
+        "test/bad/unsupported.gif",
     ],
 )
 def test_verify_anomalib_rejects_retired_or_noncanonical_layout_members(
@@ -905,6 +1118,27 @@ def test_verify_anomalib_rejects_retired_or_noncanonical_layout_members(
         item["code"] == "unexpected_anomalib_member" and item.get("path") == relative_path
         for item in result["errors"]
     )
+
+
+def test_verify_anomalib_rejects_uppercase_image_suffix_before_validation(
+    tmp_path: Path,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    path = "ground_truth/test/bad/test-bad.PNG"
+    _write_image(tmp_path / path)
+
+    with pytest.raises(SystemExit, match='"code": "invalid_dataset_path"'):
+        verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
+
+
+def test_verify_anomalib_rejects_uppercase_source_suffix_before_validation(
+    tmp_path: Path,
+) -> None:
+    _write_anomalib_dataset(tmp_path)
+    (tmp_path / "val" / "bad" / "val-bad.jpg").rename(tmp_path / "val" / "bad" / "val-bad.JPG")
+
+    with pytest.raises(SystemExit, match='"code": "invalid_dataset_path"'):
+        verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
 
 def test_verify_anomalib_rejects_unexpected_empty_directory(tmp_path: Path) -> None:

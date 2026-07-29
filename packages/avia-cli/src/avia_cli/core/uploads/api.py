@@ -18,7 +18,8 @@ from avia_cli.core.errors import (
 )
 from avia_cli.core.auth.tokens import refresh_after_auth_error
 from avia_cli.core.http import no_redirect
-from avia_cli.core.uploads.manifest import _is_image_path
+from avia_cli.core.uploads.inventory import is_dataset_image_path
+from avia_cli.core.uploads.media_types import require_canonical_media_type
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_TERMINAL_STATUSES,
     decode_batch_complete_response,
@@ -26,6 +27,7 @@ from avia_cli.core.uploads.response_contracts import (
     decode_complete_import_response,
     decode_dataset_session_response,
     decode_import_job_response,
+    validate_batch_upload_urls_request,
 )
 from avia_cli.core.uploads.state import _ensure_sha256_batch as _support_ensure_sha256_batch
 from avia_cli.core.uploads.source_file import SourceIdentity, VerifiedSourceFile
@@ -57,7 +59,7 @@ def _ensure_sha256_batch(
         files=files,
         hash_workers=hash_workers,
         source_identities=source_identities,
-        is_image_path=_is_image_path,
+        is_image_path=is_dataset_image_path,
     )
 
 
@@ -173,7 +175,8 @@ def _batch_upload_urls(
     timeout: int | float = 60,
     retries: int = 3,
 ) -> dict[str, Any]:
-    payload = {"files": files}
+    validate_batch_upload_urls_request(files)
+    payload = {"files": [dict(item) for item in files]}
     response = _request_json_with_retries(
         method="POST",
         url=_project_path(
@@ -205,6 +208,12 @@ def _complete_dataset_file_batch(
     timeout: int | float = 900,
     retries: int = 4,
 ) -> dict[str, Any]:
+    for item in files:
+        relative_path = str(item.get("relative_path") or "")
+        require_canonical_media_type(
+            item.get("content_type"),
+            label=f"batch-complete content_type for {relative_path}",
+        )
     url = _project_path(
         api,
         project_id,

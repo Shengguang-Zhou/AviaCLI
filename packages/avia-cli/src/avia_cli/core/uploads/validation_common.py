@@ -6,9 +6,8 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
-
-from avia_cli.core.uploads.manifest import _is_image_path, is_client_state_path
+from avia_cli.core.uploads.image_validation import decoded_image_size
+from avia_cli.core.uploads.manifest import is_client_state_path
 
 _DOCUMENT_NAMES = {
     "LICENSE",
@@ -50,17 +49,7 @@ def json_finite_numbers(value: object) -> list[float] | None:
 
 
 def image_size(path: Path) -> tuple[int, int]:
-    try:
-        with Image.open(path) as image:
-            image.verify()
-        with Image.open(path) as image:
-            image.load()
-            width, height = int(image.width), int(image.height)
-    except Exception as exc:
-        raise ValueError(f"cannot fully decode image {path}: {exc}") from exc
-    if width <= 0 or height <= 0:
-        raise ValueError("image dimensions must be positive")
-    return width, height
+    return decoded_image_size(path)
 
 
 def dataset_role_directories(*, source_root: Path, role_root: Path) -> list[Path]:
@@ -70,18 +59,6 @@ def dataset_role_directories(*, source_root: Path, role_root: Path) -> list[Path
         path
         for path in role_root.iterdir()
         if path.is_dir() and not is_client_state_path(path.relative_to(source_root))
-    )
-
-
-def image_files(*, source_root: Path, root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file()
-        and not is_client_state_path(path.relative_to(source_root))
-        and _is_image_path(path.name)
     )
 
 
@@ -110,10 +87,20 @@ def is_document_path(relative_path: str) -> bool:
 def is_cache_path(relative_path: str) -> bool:
     parts = Path(relative_path).parts
     return any(
-        part in {"__pycache__", ".cache", ".pytest_cache"}
+        part.lower()
+        in {
+            ".avia",
+            ".cache",
+            ".git",
+            ".ipynb_checkpoints",
+            ".pytest_cache",
+            "__macosx",
+            "__pycache__",
+            "node_modules",
+        }
         or part.endswith((".cache", ".pyc", ".tmp", "~"))
         for part in parts
-    )
+    ) or parts[-1].lower() in {".ds_store", "thumbs.db"}
 
 
 Point = tuple[float, float]
