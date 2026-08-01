@@ -33,7 +33,14 @@ class ManifestImageError(RuntimeError):
 
 
 def is_client_state_path(relative_path: Path) -> bool:
-    return ".avia" in relative_path.parts
+    parts = relative_path.parts
+    return len(parts) > 2 and parts[:2] == (".avia", "imports")
+
+
+def is_client_state_directory(relative_path: Path) -> bool:
+    return relative_path.parts in {(".avia",), (".avia", "imports")} or is_client_state_path(
+        relative_path
+    )
 
 
 def _image_size_file(path: Path) -> tuple[int, int]:

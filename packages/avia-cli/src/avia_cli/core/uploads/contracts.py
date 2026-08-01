@@ -51,17 +51,19 @@ def require_folder_class_catalog(
     return classes
 
 
-def require_format_task(*, format_name: str, task_key: str) -> tuple[str, str]:
-    exact_format = str(format_name)
-    exact_task = str(task_key)
-    supported_tasks = FORMAT_TASKS.get(exact_format)
-    if supported_tasks is None or exact_task not in supported_tasks:
-        raise SystemExit(f"format '{exact_format}' does not support task '{exact_task}'")
-    return exact_format, exact_task
+def require_format_task(*, format_name: object, task_key: object) -> tuple[str, str]:
+    if not isinstance(format_name, str) or not isinstance(task_key, str):
+        raise SystemExit("format and task must be strings")
+    supported_tasks = FORMAT_TASKS.get(format_name)
+    if supported_tasks is None or task_key not in supported_tasks:
+        raise SystemExit(f"format '{format_name}' does not support task '{task_key}'")
+    return format_name, task_key
 
 
 def require_object_prefix_uri(uri: object) -> str:
-    value = str(uri)
+    if not isinstance(uri, str):
+        raise SystemExit("object-prefix URI must be a string")
+    value = uri
     if (
         not value
         or value != value.strip()

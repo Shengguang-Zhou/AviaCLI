@@ -7,9 +7,11 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from avia_cli.core.api_base import canonical_api_base
@@ -35,9 +37,11 @@ from avia_cli.core.uploads.api import (
     _put_file_with_retries,
 )
 from avia_cli.core.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.put_batch import PutSuccess, settle_concurrent_puts
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_TERMINAL_STATUSES,
     decode_source_import_response,
+    require_canonical_import_id,
     validate_source_import_request,
 )
 from avia_cli.core.uploads.state import (
@@ -55,7 +59,7 @@ from avia_cli.core.uploads.source_file import (
     capture_source_identity,
     open_verified_source,
 )
-from avia_cli.core.uploads.timing import UploadTimingRecorder
+from avia_cli.core.uploads.timing import TimedCallOutcome, UploadTimingRecorder
 from avia_cli.core.uploads.transfer import (
     UploadTransportRoute,
     resolve_upload_route,
@@ -74,6 +78,73 @@ class PreparedDatasetUpload:
     source_identities: dict[str, SourceIdentity]
     state_dir: Path
     validation_warnings: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class _PutStateTracker:
+    ready_to_stream: list[str]
+    progress: dict[str, float | int]
+    pending_state_saves: int
+    last_state_saved_at: float
+    periodic_state_save_failed: bool = False
+    blocked: bool = False
+
+
+def _record_successful_put(
+    relative_path: str,
+    signed: dict[str, Any],
+    *,
+    file_by_relative: dict[str, dict[str, Any]],
+    state_files: dict[str, dict[str, Any]],
+    state: dict[str, Any],
+    state_dir: Path,
+    tracker: _PutStateTracker,
+    state_flush_every: int,
+    state_flush_interval: float,
+    emit_progress: Callable[[], None],
+) -> None:
+    file_item = file_by_relative[relative_path]
+    has_width = "width" in file_item
+    has_height = "height" in file_item
+    if has_width != has_height:
+        raise RuntimeError("file upload dimensions must be paired")
+    existing = state_files[relative_path]
+    state_files[relative_path] = {
+        **existing,
+        "uploaded": True,
+        "object_key": signed["object_key"],
+        "content_type": signed["content_type"],
+        "sha256": file_item["sha256"],
+        "size_bytes": file_item["size_bytes"],
+        "width": file_item["width"] if has_width else 0,
+        "height": file_item["height"] if has_height else 0,
+    }
+    state["files"] = state_files
+    tracker.ready_to_stream.append(relative_path)
+    tracker.progress["done_files"] = int(tracker.progress["done_files"]) + 1
+    tracker.progress["done_bytes"] = int(tracker.progress["done_bytes"]) + int(
+        file_item["size_bytes"]
+    )
+    tracker.pending_state_saves += 1
+    now = time.monotonic()
+    if not tracker.periodic_state_save_failed and (
+        tracker.pending_state_saves >= state_flush_every
+        or now - tracker.last_state_saved_at >= state_flush_interval
+    ):
+        try:
+            _save_state(state_dir, state)
+        except Exception:
+            tracker.periodic_state_save_failed = True
+            tracker.blocked = True
+            raise
+        tracker.pending_state_saves = 0
+        tracker.last_state_saved_at = now
+    if not tracker.blocked:
+        try:
+            emit_progress()
+        except Exception:
+            tracker.blocked = True
+            raise
 
 
 def create_source_import(
@@ -252,8 +323,8 @@ def prepare_dataset_upload(args: object) -> PreparedDatasetUpload:
     """Complete every local scan and dataset validation before authentication."""
 
     format_name, task_key = require_format_task(
-        format_name=str(args.format),
-        task_key=str(args.task_key),
+        format_name=args.format,
+        task_key=args.task_key,
     )
     declared_classes = list(args.class_name or []) or None
     if declared_classes is not None and format_name != "yolo":
@@ -364,6 +435,10 @@ def _upload_validated_dataset(
     source_identities: dict[str, SourceIdentity],
     state_dir: Path,
 ) -> dict[str, Any]:
+    format_name, task_key = require_format_task(
+        format_name=args.format,
+        task_key=args.task_key,
+    )
     batch_size = int(args.batch_size)
     if batch_size < 1 or batch_size > _MAX_FOLDER_BATCH_SIZE:
         raise SystemExit(f"--batch-size must be between 1 and {_MAX_FOLDER_BATCH_SIZE}")
@@ -375,8 +450,8 @@ def _upload_validated_dataset(
             project_id=project_id,
             api=api,
             source=str(source_root),
-            import_format=str(args.format),
-            task_key=str(args.task_key),
+            import_format=format_name,
+            task_key=task_key,
         )
         if state is not None:
             _assert_resume_source_unchanged(
@@ -408,8 +483,8 @@ def _upload_validated_dataset(
             "session_payload": session_payload,
             "session_response": None,
             "source": str(source_root),
-            "format": str(args.format),
-            "task_key": str(args.task_key),
+            "format": format_name,
+            "task_key": task_key,
             "complete_response": None,
             "files": {
                 str(item["relative_path"]): {
@@ -451,16 +526,17 @@ def _upload_validated_dataset(
             project_id=project_id,
             payload=dict(state["session_payload"]),
         )
-        import_id = str(session.get("import_id") or "").strip()
-        if not import_id:
-            raise SystemExit("dataset-session response did not include import_id")
+        import_id = require_canonical_import_id(
+            session.get("import_id"),
+            label="dataset-session response import_id",
+        )
         state["import_id"] = import_id
         state["session_response"] = session
         state["phase"] = "uploading"
         _save_state(state_dir, state)
 
-    import_id = str(state["import_id"])
-    idempotency_key = str(state["idempotency_key"])
+    import_id = require_canonical_import_id(state["import_id"], label="state import_id")
+    idempotency_key = cast(str, state["idempotency_key"])
     state_files: dict[str, dict[str, Any]] = {
         str(key): dict(value) for key, value in dict(state.get("files") or {}).items()
     }
@@ -469,7 +545,9 @@ def _upload_validated_dataset(
     completion_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=int(args.batch_complete_concurrency)
     )
-    completion_futures: list[tuple[concurrent.futures.Future[dict[str, Any]], list[str]]] = []
+    completion_futures: list[
+        tuple[concurrent.futures.Future[TimedCallOutcome[dict[str, Any]]], list[str]]
+    ] = []
     completion_errors: list[tuple[str, list[str], BaseException]] = []
 
     def stream_files_for(relative_paths: list[str]) -> list[dict[str, object]]:
@@ -497,7 +575,7 @@ def _upload_validated_dataset(
             return
         stream_files = stream_files_for(paths)
         future = completion_executor.submit(
-            upload_timing.time_call,
+            upload_timing.capture_call,
             "batch_complete",
             _complete_dataset_file_batch,
             file_count=len(stream_files),
@@ -507,25 +585,38 @@ def _upload_validated_dataset(
             project_id=project_id,
             import_id=import_id,
             files=stream_files,
+            request_payload=dict(state["session_payload"]),
+            session_response=dict(state["session_response"]),
             timeout=float(args.batch_complete_timeout),
             retries=int(args.batch_complete_retries),
         )
         completion_futures.append((future, paths))
 
     def record_streamed_batch(
-        future: concurrent.futures.Future[dict[str, Any]], paths: list[str]
+        future: concurrent.futures.Future[TimedCallOutcome[dict[str, Any]]],
+        paths: list[str],
     ) -> None:
-        future.result()
+        outcome = future.result()
         for relative_path in paths:
             existing = state_files.get(relative_path, {})
             existing["streamed"] = True
             state_files[relative_path] = existing
-        upload_timing.record_accepted_files(
-            len(paths),
-            elapsed_sec=time.monotonic() - upload_started,
-        )
         state["files"] = state_files
-        _save_state(state_dir, state)
+        try:
+            _save_state(state_dir, state)
+        except Exception as exc:
+            completion_errors.append(("batch-complete-state", list(paths), exc))
+        if outcome.telemetry_error is not None:
+            completion_errors.append(
+                ("batch-complete-telemetry", list(paths), outcome.telemetry_error)
+            )
+        try:
+            upload_timing.record_accepted_files(
+                len(paths),
+                elapsed_sec=time.monotonic() - upload_started,
+            )
+        except Exception as exc:
+            completion_errors.append(("batch-complete-accepted-telemetry", list(paths), exc))
 
     def drain_stream_batches(*, block: bool = False) -> None:
         if not completion_futures:
@@ -617,6 +708,8 @@ def _upload_validated_dataset(
                     project_id=project_id,
                     import_id=import_id,
                     files=signing_files,
+                    request_payload=dict(state["session_payload"]),
+                    session_response=dict(state["session_response"]),
                     timeout=float(args.batch_upload_url_timeout),
                     retries=int(args.batch_upload_url_retries),
                 )
@@ -673,14 +766,14 @@ def _upload_validated_dataset(
                 *,
                 signed_items: dict[str, dict[str, Any]] = upload_items,
                 routes: dict[str, UploadTransportRoute] = upload_routes,
-            ) -> tuple[str, dict[str, Any]]:
+            ) -> PutSuccess:
                 signed = signed_items[relative_path]
                 upload_url = str(signed["upload_url"])
                 if not upload_url:
                     raise RuntimeError(f"upload URL missing for {relative_path}")
                 source_file = source_root / relative_path
                 headers = dict(signed.get("required_headers") or {})
-                upload_timing.time_call(
+                outcome = upload_timing.capture_call(
                     "file_put",
                     _put_file_with_retries,
                     file_count=1,
@@ -694,84 +787,54 @@ def _upload_validated_dataset(
                     connect_timeout=float(args.upload_connect_timeout),
                     read_timeout=float(args.upload_read_timeout),
                 )
-                return relative_path, signed
+                return PutSuccess(
+                    relative_path=relative_path,
+                    signed=signed,
+                    telemetry_error=outcome.telemetry_error,
+                )
 
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=int(args.concurrency or 1))
-            futures = {
-                executor.submit(upload_one, str(item["relative_path"])): str(item["relative_path"])
-                for item in pending
-                if str(item["relative_path"]) in upload_items
-            }
-            ready_to_stream: list[str] = []
-            pending_state_saves = 0
-            last_state_saved_at = time.monotonic()
-            state_flush_every = int(args.state_flush_every)
-            state_flush_interval = float(args.state_flush_interval)
-            put_failures: list[tuple[str, list[str], BaseException]] = []
-            try:
-                for future in concurrent.futures.as_completed(futures):
-                    if future.cancelled():
-                        continue
-                    try:
-                        relative_path, signed = future.result()
-                    except Exception as exc:
-                        put_failures.append(("file-put", [futures[future]], exc))
-                        if len(put_failures) == 1:
-                            for pending_future in futures:
-                                pending_future.cancel()
-                        continue
-                    existing = state_files.get(relative_path, {})
-                    existing.update(
-                        {
-                            "uploaded": True,
-                            "object_key": signed.get("object_key"),
-                            "content_type": signed.get("content_type"),
-                            "sha256": str(file_by_relative[relative_path].get("sha256") or ""),
-                            "size_bytes": int(
-                                file_by_relative[relative_path].get("size_bytes") or 0
-                            ),
-                            "width": int(file_by_relative[relative_path].get("width") or 0),
-                            "height": int(file_by_relative[relative_path].get("height") or 0),
-                        }
-                    )
-                    state_files[relative_path] = existing
-                    ready_to_stream.append(relative_path)
-                    progress["done_files"] = int(progress["done_files"]) + 1
-                    progress["done_bytes"] = int(progress["done_bytes"]) + int(
-                        file_by_relative[relative_path].get("size_bytes") or 0
-                    )
-                    state["files"] = state_files
-                    pending_state_saves += 1
-                    now = time.monotonic()
-                    if (
-                        pending_state_saves >= state_flush_every
-                        or now - last_state_saved_at >= state_flush_interval
-                    ):
-                        _save_state(state_dir, state)
-                        pending_state_saves = 0
-                        last_state_saved_at = now
-                    emit_progress()
-                    if len(ready_to_stream) >= stream_flush_size:
-                        submit_stream_batch(ready_to_stream)
-                        ready_to_stream = []
-                    drain_stream_batches()
-            finally:
-                if pending_state_saves:
+            tracker = _PutStateTracker(
+                ready_to_stream=[],
+                progress=progress,
+                pending_state_saves=0,
+                last_state_saved_at=time.monotonic(),
+            )
+            put_failures = settle_concurrent_puts(
+                relative_paths=[
+                    str(item["relative_path"])
+                    for item in pending
+                    if str(item["relative_path"]) in upload_items
+                ],
+                max_workers=int(args.concurrency or 1),
+                upload_one=upload_one,
+                record_success=partial(
+                    _record_successful_put,
+                    file_by_relative=file_by_relative,
+                    state_files=state_files,
+                    state=state,
+                    state_dir=state_dir,
+                    tracker=tracker,
+                    state_flush_every=int(args.state_flush_every),
+                    state_flush_interval=float(args.state_flush_interval),
+                    emit_progress=emit_progress,
+                ),
+            )
+            if tracker.pending_state_saves:
+                try:
                     _save_state(state_dir, state)
-                # Running PUTs cannot be cancelled safely. Wait for them and
-                # persist every completed success before returning the first
-                # failure, so no background thread keeps mutating object
-                # storage after the command has exited and resume state remains
-                # an exact account of remote side effects.
-                executor.shutdown(wait=True, cancel_futures=True)
-            if put_failures:
+                except Exception as exc:
+                    put_failures.append(("resume-state-final", list(tracker.ready_to_stream), exc))
+            if put_failures or completion_errors:
                 drain_stream_batches(block=True)
                 failures = [*put_failures, *completion_errors]
                 completion_errors.clear()
                 raise ConcurrentUploadError(failures)
             emit_progress(force=True)
-            if ready_to_stream:
-                submit_stream_batch(ready_to_stream)
+            if tracker.ready_to_stream:
+                for offset in range(0, len(tracker.ready_to_stream), stream_flush_size):
+                    submit_stream_batch(
+                        tracker.ready_to_stream[offset : offset + stream_flush_size]
+                    )
                 drain_stream_batches()
             raise_stream_completion_errors()
 
@@ -790,8 +853,18 @@ def _upload_validated_dataset(
     except Exception as exc:
         primary_error = exc
     finally:
-        drain_stream_batches(block=True)
-        completion_executor.shutdown(wait=True, cancel_futures=False)
+        try:
+            drain_stream_batches(block=True)
+        except Exception as exc:
+            completion_errors.append(("batch-complete-settlement", [], exc))
+        try:
+            completion_executor.shutdown(wait=True, cancel_futures=False)
+        except Exception as exc:
+            completion_errors.append(("batch-complete-shutdown", [], exc))
+        try:
+            _save_state(state_dir, state)
+        except Exception as exc:
+            completion_errors.append(("resume-state-final", [], exc))
     if primary_error is not None:
         failures = (
             list(primary_error.failures)
@@ -803,7 +876,7 @@ def _upload_validated_dataset(
     raise_stream_completion_errors()
     assert_all_files_streamed()
 
-    complete = upload_timing.time_call(
+    complete_outcome = upload_timing.capture_call(
         "import_finalize",
         _complete_import,
         api=api,
@@ -813,15 +886,26 @@ def _upload_validated_dataset(
         request_payload=dict(state["session_payload"]),
         session_response=dict(state["session_response"]),
     )
+    complete = complete_outcome.value
     state["phase"] = "completed"
     state["complete_response"] = complete
-    _save_state(state_dir, state)
+    finalize_errors: list[tuple[str, list[str], BaseException]] = []
+    try:
+        _save_state(state_dir, state)
+    except Exception as exc:
+        finalize_errors.append(("import-finalize-state", [import_id], exc))
+    if complete_outcome.telemetry_error is not None:
+        finalize_errors.append(
+            ("import-finalize-telemetry", [import_id], complete_outcome.telemetry_error)
+        )
+    if finalize_errors:
+        raise ConcurrentUploadError(finalize_errors)
 
     result: dict[str, Any] = {
         "import_id": import_id,
         "project_id": project_id,
-        "format": str(args.format),
-        "task_key": str(args.task_key),
+        "format": format_name,
+        "task_key": task_key,
         "file_count": int(manifest["file_count"]),
         "total_bytes": int(manifest["total_bytes"]),
         "image_count": int(manifest["image_count"]),
@@ -837,11 +921,13 @@ def _upload_validated_dataset(
             token=token,
             project_id=project_id,
             import_id=import_id,
+            request_payload=dict(state["session_payload"]),
+            session_response=dict(state["session_response"]),
             timeout_sec=int(args.wait_timeout),
             interval_sec=float(args.poll_interval),
         )
         result["job"] = poll
-        status = str(poll.get("status") or "").strip().lower()
+        status = cast(str, poll["status"])
         if status not in IMPORT_TERMINAL_STATUSES:
             raise RuntimeError(f"poll returned non-terminal status: {status!r}")
         if status == "failed":

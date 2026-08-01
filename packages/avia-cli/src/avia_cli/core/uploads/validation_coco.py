@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeAlias
 
@@ -11,6 +12,7 @@ from pycocotools import mask as mask_utils
 
 from avia_cli.core.uploads.inventory import DatasetRoleInventory
 from avia_cli.core.uploads.manifest import is_client_state_path
+from avia_cli.core.strict_json import strict_json_loads
 from avia_cli.core.uploads.validation_common import (
     error,
     image_size,
@@ -20,7 +22,14 @@ from avia_cli.core.uploads.validation_common import (
 )
 
 CocoImageIndex: TypeAlias = dict[str, Path]
-Taxonomy: TypeAlias = tuple[tuple[object, ...], ...]
+TaxonomyIdentity: TypeAlias = str
+
+
+@dataclass(frozen=True, slots=True)
+class _CocoAnnotationDocument:
+    path: Path
+    payload: dict[str, Any]
+    category_by_id: dict[int, dict[str, object]]
 
 
 def validate_coco(
@@ -30,35 +39,23 @@ def validate_coco(
     task_key: str,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
-    annotation_paths = [source_root / relative for relative in inventory.label_paths]
-    if not annotation_paths:
-        return [], [error("missing_coco_annotations", "COCO annotations/*.json is required")]
+    classes, documents = _parse_coco_catalog(
+        source_root=source_root,
+        inventory=inventory,
+        task_key=task_key,
+        errors=errors,
+    )
     image_index = _build_image_index(source_root, inventory=inventory)
-    expected_taxonomy: Taxonomy | None = None
-    class_by_id: dict[int, str] = {}
     referenced_images: dict[str, str] = {}
-    for path in annotation_paths:
-        taxonomy = _validate_annotation_file(
+    for document in documents:
+        _validate_annotation_records(
             source_root=source_root,
-            path=path,
+            document=document,
             task_key=task_key,
             image_index=image_index,
             referenced_images=referenced_images,
             errors=errors,
         )
-        if taxonomy is None:
-            continue
-        if expected_taxonomy is None:
-            expected_taxonomy = taxonomy
-            class_by_id = {int(item[0]): str(item[1]) for item in taxonomy}
-        elif taxonomy != expected_taxonomy:
-            errors.append(
-                error(
-                    "conflicting_coco_taxonomy",
-                    "every COCO annotation file must declare one exact category taxonomy",
-                    path=path.relative_to(source_root).as_posix(),
-                )
-            )
 
     all_images = set(image_index)
     for relative in sorted(all_images - set(referenced_images)):
@@ -69,7 +66,7 @@ def validate_coco(
                 path=relative,
             )
         )
-    allowed_json = {path.relative_to(source_root).as_posix() for path in annotation_paths}
+    allowed_json = set(inventory.label_paths)
     for path in sorted(source_root.rglob("*")):
         if not path.is_file() or is_client_state_path(path.relative_to(source_root)):
             continue
@@ -83,21 +80,89 @@ def validate_coco(
                     path=relative,
                 )
             )
-    return [class_by_id[key] for key in sorted(class_by_id)], errors
+    return classes, errors
 
 
-def _validate_annotation_file(
+def inspect_coco_class_catalog(
+    *,
+    source_root: Path,
+    inventory: DatasetRoleInventory,
+    task_key: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    errors: list[dict[str, Any]] = []
+    classes, _documents = _parse_coco_catalog(
+        source_root=source_root,
+        inventory=inventory,
+        task_key=task_key,
+        errors=errors,
+    )
+    return classes, errors
+
+
+def _parse_coco_catalog(
+    *,
+    source_root: Path,
+    inventory: DatasetRoleInventory,
+    task_key: str,
+    errors: list[dict[str, Any]],
+) -> tuple[list[str], list[_CocoAnnotationDocument]]:
+    annotation_paths = [source_root / relative for relative in inventory.label_paths]
+    if not annotation_paths:
+        errors.append(error("missing_coco_annotations", "COCO annotations/*.json is required"))
+        return [], []
+
+    expected_taxonomy: TaxonomyIdentity | None = None
+    class_by_id: dict[int, str] = {}
+    documents: list[_CocoAnnotationDocument] = []
+    for path in annotation_paths:
+        payload = _read_annotation_document(
+            source_root=source_root,
+            path=path,
+            errors=errors,
+        )
+        if payload is None:
+            continue
+        relative = path.relative_to(source_root).as_posix()
+        categories: list[object] = payload["categories"]
+        taxonomy, category_by_id = _categories(
+            categories,
+            task_key=task_key,
+            path=relative,
+            errors=errors,
+        )
+        if expected_taxonomy is None:
+            expected_taxonomy = taxonomy
+            class_by_id = {
+                category_id: str(category["name"])
+                for category_id, category in category_by_id.items()
+            }
+        elif taxonomy != expected_taxonomy:
+            errors.append(
+                error(
+                    "conflicting_coco_taxonomy",
+                    "every COCO annotation file must declare one exact category taxonomy",
+                    path=relative,
+                )
+            )
+        documents.append(
+            _CocoAnnotationDocument(
+                path=path,
+                payload=payload,
+                category_by_id=category_by_id,
+            )
+        )
+    return [class_by_id[key] for key in sorted(class_by_id)], documents
+
+
+def _read_annotation_document(
     *,
     source_root: Path,
     path: Path,
-    task_key: str,
-    image_index: CocoImageIndex,
-    referenced_images: dict[str, str],
     errors: list[dict[str, Any]],
-) -> Taxonomy | None:
+) -> dict[str, Any] | None:
     relative = path.relative_to(source_root).as_posix()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = strict_json_loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         errors.append(
             error(
@@ -111,6 +176,16 @@ def _validate_annotation_file(
         return None
     except (OSError, UnicodeError) as exc:
         errors.append(error("coco_annotation_read_failed", str(exc), path=relative))
+        return None
+    except ValueError as exc:
+        errors.append(
+            error(
+                "invalid_coco_json",
+                "COCO annotation JSON violates the strict JSON contract",
+                path=relative,
+                reason=str(exc),
+            )
+        )
         return None
     if not isinstance(payload, dict):
         errors.append(
@@ -134,9 +209,22 @@ def _validate_annotation_file(
         )
         return None
 
-    taxonomy, category_by_id = _categories(
-        categories, task_key=task_key, path=relative, errors=errors
-    )
+    return payload
+
+
+def _validate_annotation_records(
+    *,
+    source_root: Path,
+    document: _CocoAnnotationDocument,
+    task_key: str,
+    image_index: CocoImageIndex,
+    referenced_images: dict[str, str],
+    errors: list[dict[str, Any]],
+) -> None:
+    relative = document.path.relative_to(source_root).as_posix()
+    images: list[object] = document.payload["images"]
+    annotations: list[object] = document.payload["annotations"]
+
     image_by_id = _images(
         images,
         image_index=image_index,
@@ -155,11 +243,11 @@ def _validate_annotation_file(
         annotation_id = _strict_int(raw.get("id"))
         image_id = _strict_int(raw.get("image_id"))
         category_id = _strict_int(raw.get("category_id"))
-        if annotation_id is None or annotation_id in seen_annotation_ids:
+        if annotation_id is None or annotation_id < 0 or annotation_id in seen_annotation_ids:
             errors.append(
                 error(
                     "invalid_coco_annotation_id",
-                    "annotation id must be a unique integer",
+                    "annotation id must be a unique non-negative integer",
                     **location,
                 )
             )
@@ -171,7 +259,7 @@ def _validate_annotation_file(
                 error("unknown_coco_image", "annotation references an unknown image", **location)
             )
             continue
-        category = category_by_id.get(category_id) if category_id is not None else None
+        category = document.category_by_id.get(category_id) if category_id is not None else None
         if category is None:
             errors.append(
                 error(
@@ -180,6 +268,7 @@ def _validate_annotation_file(
             )
             continue
         width, height, _image_relative = image_record
+        _validate_annotation_record(raw, location=location, errors=errors)
         _validate_bbox(
             raw.get("bbox"), width=width, height=height, location=location, errors=errors
         )
@@ -195,13 +284,12 @@ def _validate_annotation_file(
             _validate_keypoints(
                 raw, category=category, width=width, height=height, location=location, errors=errors
             )
-    return taxonomy
 
 
 def _categories(
     categories: list[object], *, task_key: str, path: str, errors: list[dict[str, Any]]
-) -> tuple[Taxonomy, dict[int, dict[str, object]]]:
-    canonical: list[tuple[object, ...]] = []
+) -> tuple[TaxonomyIdentity, dict[int, dict[str, object]]]:
+    pose_schemas: set[tuple[tuple[str, ...], tuple[tuple[int, int], ...]]] = set()
     result: dict[int, dict[str, object]] = {}
     names: set[str] = set()
     for index, raw in enumerate(categories):
@@ -228,8 +316,10 @@ def _categories(
                 )
             )
             continue
-        supercategory = raw.get("supercategory", "")
-        if not isinstance(supercategory, str) or supercategory != supercategory.strip():
+        supercategory = raw.get("supercategory")
+        if "supercategory" in raw and (
+            not isinstance(supercategory, str) or supercategory != supercategory.strip()
+        ):
             errors.append(
                 error(
                     "invalid_coco_category", "supercategory must be a canonical string", **location
@@ -240,12 +330,17 @@ def _categories(
         skeleton: tuple[tuple[int, int], ...] = ()
         if task_key == "pose":
             raw_keypoints = raw.get("keypoints")
-            raw_skeleton = raw.get("skeleton")
+            raw_skeleton = raw.get("skeleton", [])
             if (
                 not isinstance(raw_keypoints, list)
                 or not raw_keypoints
+                or len(raw_keypoints) > 2048
                 or any(
-                    not isinstance(item, str) or not item or item != item.strip()
+                    not isinstance(item, str)
+                    or not item
+                    or item != item.strip()
+                    or len(item) > 200
+                    or any(unicodedata.category(character) == "Cc" for character in item)
                     for item in raw_keypoints
                 )
                 or len(set(raw_keypoints)) != len(raw_keypoints)
@@ -254,13 +349,14 @@ def _categories(
                 errors.append(
                     error(
                         "invalid_coco_pose_category",
-                        "pose categories require unique keypoint names and a skeleton array",
+                        "pose categories require unique keypoint names and an optional skeleton array",
                         **location,
                     )
                 )
                 continue
             keypoints = tuple(raw_keypoints)
             skeleton_rows: list[tuple[int, int]] = []
+            seen_skeleton_edges: set[tuple[int, int]] = set()
             for edge in raw_skeleton:
                 if (
                     not isinstance(edge, list)
@@ -281,21 +377,82 @@ def _categories(
                     )
                     skeleton_rows = []
                     break
-                skeleton_rows.append((int(edge[0]), int(edge[1])))
+                skeleton_edge = (int(edge[0]), int(edge[1]))
+                canonical_edge = (
+                    min(skeleton_edge[0], skeleton_edge[1]),
+                    max(skeleton_edge[0], skeleton_edge[1]),
+                )
+                if canonical_edge in seen_skeleton_edges:
+                    errors.append(
+                        error(
+                            "invalid_coco_pose_category",
+                            "skeleton edges must be unique",
+                            **location,
+                        )
+                    )
+                    skeleton_rows = []
+                    break
+                seen_skeleton_edges.add(canonical_edge)
+                skeleton_rows.append(skeleton_edge)
             if raw_skeleton and not skeleton_rows:
                 continue
-            if len(set(skeleton_rows)) != len(skeleton_rows):
+            skeleton = tuple(skeleton_rows)
+            missing_counterpart = _missing_pose_counterpart(keypoints)
+            if missing_counterpart is not None:
+                keypoint, counterpart = missing_counterpart
                 errors.append(
-                    error("invalid_coco_pose_category", "skeleton edges must be unique", **location)
+                    error(
+                        "invalid_coco_pose_category",
+                        "left/right keypoint counterpart is missing",
+                        keypoint=keypoint,
+                        counterpart=counterpart,
+                        **location,
+                    )
                 )
                 continue
-            skeleton = tuple(skeleton_rows)
         normalized = dict(raw)
-        normalized["keypoints"] = list(keypoints)
+        if task_key == "pose":
+            normalized["keypoints"] = list(keypoints)
+            normalized["skeleton"] = [list(edge) for edge in skeleton]
+            pose_schemas.add((keypoints, skeleton))
         result[category_id] = normalized
         names.add(name)
-        canonical.append((category_id, name, supercategory, keypoints, skeleton))
-    return tuple(sorted(canonical)), result
+    if task_key == "pose" and len(pose_schemas) > 1:
+        errors.append(
+            error(
+                "conflicting_coco_pose_schema",
+                "all COCO categories must declare the same pose keypoint schema",
+                path=path,
+            )
+        )
+    return _canonical_json_identity([result[category_id] for category_id in sorted(result)]), result
+
+
+def _canonical_json_identity(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _missing_pose_counterpart(names: tuple[str, ...]) -> tuple[str, str] | None:
+    known = set(names)
+    for name in names:
+        counterpart: str | None = None
+        if name == "left":
+            counterpart = "right"
+        elif name == "right":
+            counterpart = "left"
+        elif name.startswith("left_"):
+            counterpart = f"right_{name.removeprefix('left_')}"
+        elif name.startswith("right_"):
+            counterpart = f"left_{name.removeprefix('right_')}"
+        if counterpart is not None and counterpart not in known:
+            return name, counterpart
+    return None
 
 
 def _images(
@@ -336,7 +493,7 @@ def _images(
         except (OSError, ValueError) as exc:
             errors.append(error("invalid_image", str(exc), file_name=file_name, **location))
             continue
-        resolved_relative = next(key for key, value in image_index.items() if value == image_path)
+        resolved_relative = file_name
         previous = referenced_images.get(resolved_relative)
         if previous is not None:
             errors.append(
@@ -420,6 +577,25 @@ def _validate_bbox(
         )
 
 
+def _validate_annotation_record(
+    annotation: dict[str, object],
+    *,
+    location: dict[str, object],
+    errors: list[dict[str, Any]],
+) -> None:
+    area = json_finite_numbers([annotation.get("area")])
+    if area is None or area[0] <= 0:
+        errors.append(
+            error(
+                "invalid_coco_area", "annotation area must be a positive finite number", **location
+            )
+        )
+    if _strict_int(annotation.get("iscrowd")) not in {0, 1}:
+        errors.append(
+            error("invalid_coco_iscrowd", "annotation iscrowd must be exactly 0 or 1", **location)
+        )
+
+
 def _validate_segmentation(
     value: object,
     *,
@@ -471,13 +647,17 @@ def _decode_segmentation_mask(value: object, *, width: int, height: int) -> np.n
                 "size": [height, width],
                 "counts": counts.encode("ascii", "strict"),
             }
-        elif (
-            isinstance(counts, list)
-            and counts
-            and all(_strict_int(item) is not None and int(item) >= 0 for item in counts)
-            and sum(int(item) for item in counts) == height * width
-        ):
-            rle = mask_utils.frPyObjects({"size": [height, width], "counts": counts}, height, width)
+        elif isinstance(counts, list):
+            canonical_counts = _validate_uncompressed_rle_counts(
+                counts,
+                height=height,
+                width=width,
+            )
+            rle = mask_utils.frPyObjects(
+                {"size": [height, width], "counts": canonical_counts},
+                height,
+                width,
+            )
         else:
             raise ValueError("COCO RLE counts are invalid")
         decoded = mask_utils.decode(rle)
@@ -489,6 +669,27 @@ def _decode_segmentation_mask(value: object, *, width: int, height: int) -> np.n
     if mask.shape != (height, width) or not np.any(mask):
         raise ValueError("COCO segmentation must be a non-empty image-sized mask")
     return (mask > 0).astype(np.uint8)
+
+
+def _validate_uncompressed_rle_counts(
+    counts: list[object],
+    *,
+    height: int,
+    width: int,
+) -> list[int]:
+    if not counts:
+        raise ValueError("COCO RLE counts are invalid")
+    canonical: list[int] = []
+    for raw_count in counts:
+        count = _strict_int(raw_count)
+        if count is None or count < 0:
+            raise ValueError("COCO RLE counts are invalid")
+        canonical.append(count)
+    if sum(canonical) != height * width:
+        raise ValueError("COCO RLE counts must cover the exact image area")
+    if any(count == 0 for count in canonical[1:]):
+        raise ValueError("COCO RLE permits a zero run only as the first count")
+    return canonical
 
 
 def _require_lossless_yolo_polygon(mask: np.ndarray) -> None:
@@ -526,22 +727,18 @@ def _validate_keypoints(
     visible = 0
     for offset in range(0, len(numbers), 3):
         x, y, visibility = numbers[offset : offset + 3]
-        invalid = (
-            visibility not in {0.0, 1.0, 2.0}
-            or (visibility == 0 and (x != 0 or y != 0))
-            or (visibility > 0 and (x < 0 or x > width or y < 0 or y > height))
-        )
+        invalid = visibility not in {0.0, 1.0, 2.0} or x < 0 or x > width or y < 0 or y > height
         if invalid:
             errors.append(
                 error(
                     "invalid_coco_keypoints",
-                    "visible keypoints must fit the image and invisible keypoints must be 0,0,0",
+                    "keypoints must use visibility 0, 1, or 2 and fit inside the image",
                     **location,
                 )
             )
             return
         visible += int(visibility > 0)
-    if _strict_int(annotation.get("num_keypoints")) != visible:
+    if "num_keypoints" in annotation and _strict_int(annotation.get("num_keypoints")) != visible:
         errors.append(
             error(
                 "invalid_coco_num_keypoints",

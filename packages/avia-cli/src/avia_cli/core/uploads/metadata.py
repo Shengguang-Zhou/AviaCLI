@@ -4,6 +4,7 @@ from pathlib import Path
 from avia_cli.core.uploads.class_catalog import (
     require_canonical_class_catalog,
     require_canonical_class_index,
+    require_canonical_nonnegative_integer,
     require_class_count,
     require_indexed_class_catalog,
 )
@@ -61,7 +62,7 @@ def _read_yolo_yaml(path: Path) -> dict[str, object]:
         if not isinstance(key_node, ScalarNode) or key_node.tag != "tag:yaml.org,2002:str":
             continue
         key = key_node.value
-        if key not in {"names", "nc"}:
+        if key not in {"kpt_shape", "names", "nc"}:
             continue
         if key in identity_nodes:
             raise SystemExit(f"duplicate YOLO metadata {key} in {path}")
@@ -81,11 +82,16 @@ def _read_yolo_yaml(path: Path) -> dict[str, object]:
     )
     nc_node = identity_nodes.get("nc")
     if nc_node is not None:
-        if not isinstance(nc_node, ScalarNode) or nc_node.tag != "tag:yaml.org,2002:int":
+        if (
+            not isinstance(nc_node, ScalarNode)
+            or nc_node.tag != "tag:yaml.org,2002:int"
+            or nc_node.style is not None
+            or content[nc_node.start_mark.index : nc_node.end_mark.index] != nc_node.value
+        ):
             raise SystemExit(f"invalid YOLO nc in {path}")
         try:
             nc = require_class_count(
-                require_canonical_class_index(
+                require_canonical_nonnegative_integer(
                     nc_node.value,
                     label=f"YOLO nc in {path}",
                 ),

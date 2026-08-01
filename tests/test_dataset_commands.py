@@ -31,6 +31,25 @@ def _write_yolo_dataset(root: Path, *, with_label: bool = True) -> None:
         (labels / "a.txt").write_text("0 0.5 0.5 0.25 0.25\n", encoding="utf-8")
 
 
+def _materialized_version_ref(
+    dataset_version_id: str = "dsv_done",
+    project_scope_id: str = "scope_123",
+) -> dict[str, object]:
+    path_prefix = f"dataset-manifests/{project_scope_id}/{dataset_version_id}"
+    return {
+        "dataset_version_id": dataset_version_id,
+        "storage_kind": "minio_lakefs",
+        "lakefs_repo": "avia-datasets",
+        "lakefs_commit": "commit-123",
+        "lakefs_tag": dataset_version_id,
+        "path_prefix": path_prefix,
+        "manifest_path": f"{path_prefix}/manifest.json",
+        "content_digest": f"sha256:{'a' * 64}",
+        "item_count": 1,
+        "byte_count": 1,
+    }
+
+
 def test_dataset_parser_exposes_inspect_verify_and_cleanup_plan(tmp_path: Path) -> None:
     source = tmp_path / "dataset"
     _write_yolo_dataset(source)
@@ -711,7 +730,9 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                         "width": 0,
                         "height": 0,
                         "content_type": "text/plain",
-                        "object_key": "imports/imp_done/classes.txt",
+                        "object_key": (
+                            "project_assets/ws_123/scope_123/imports/imp_done/files/classes.txt"
+                        ),
                         "source_identity": {
                             "device": 1,
                             "inode": 1,
@@ -735,12 +756,14 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "import_id": "imp_done",
                     "status": "succeeded",
                     "job_type": "dataset.import.yolo",
-                    "object_key": "imports/imp_done/manifest.json",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/imp_done/manifest.json"
+                    ),
                     "progress": {"phase": "done"},
                     "error": {},
                     "dataset_validation": None,
-                    "dataset_version_id": "dv_123",
-                    "version_ref": {"dataset_version_id": "dv_123"},
+                    "dataset_version_id": "dsv_done",
+                    "version_ref": _materialized_version_ref(),
                     "created_at": "2026-07-15T10:00:00+00:00",
                     "updated_at": "2026-07-15T10:01:00+00:00",
                 }
@@ -788,9 +811,19 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
         lambda item: item.pop("job_type"),
         lambda item: item.update({"legacy_source": "archive"}),
         lambda item: item.update({"progress": None}),
+        lambda item: item.update({"object_key": "imports/imp_done/manifest.json"}),
         lambda item: item.update({"version_ref": {"id": "dv_123"}}),
         lambda item: item.update({"version_ref": {"dataset_version_id": ""}}),
         lambda item: item.update({"version_ref": {"dataset_version_id": "dv_other"}}),
+        lambda item: item.update(
+            {
+                "dataset_version_id": "dsv_other",
+                "version_ref": _materialized_version_ref("dsv_other"),
+            }
+        ),
+        lambda item: item.update(
+            {"version_ref": _materialized_version_ref(project_scope_id="scope_foreign")}
+        ),
     ],
 )
 def test_cleanup_plan_rejects_noncanonical_ingestion_job_entries(
@@ -800,12 +833,12 @@ def test_cleanup_plan_rejects_noncanonical_ingestion_job_entries(
         "import_id": "imp_done",
         "status": "succeeded",
         "job_type": "dataset.import.yolo",
-        "object_key": "imports/imp_done/manifest.json",
+        "object_key": "project_assets/ws_123/scope_123/imports/imp_done/manifest.json",
         "progress": {"phase": "done"},
         "error": {},
         "dataset_validation": None,
-        "dataset_version_id": "dv_123",
-        "version_ref": {"dataset_version_id": "dv_123"},
+        "dataset_version_id": "dsv_done",
+        "version_ref": _materialized_version_ref(),
         "created_at": "2026-07-15T10:00:00+00:00",
         "updated_at": "2026-07-15T10:01:00+00:00",
     }

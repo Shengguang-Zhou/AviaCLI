@@ -7,7 +7,7 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib import error as urlerror, parse, request
 
 from avia_cli.core.errors import (
@@ -176,6 +176,8 @@ def _batch_upload_urls(
     project_id: str,
     import_id: str,
     files: list[dict[str, object]],
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
     timeout: int | float = 60,
     retries: int = 3,
 ) -> dict[str, Any]:
@@ -199,6 +201,8 @@ def _batch_upload_urls(
         project_id=project_id,
         import_id=import_id,
         requested_files=files,
+        request_payload=request_payload,
+        session_response=session_response,
     )
 
 
@@ -209,6 +213,8 @@ def _complete_dataset_file_batch(
     project_id: str,
     import_id: str,
     files: list[dict[str, object]],
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
     timeout: int | float = 900,
     retries: int = 4,
 ) -> dict[str, Any]:
@@ -241,6 +247,8 @@ def _complete_dataset_file_batch(
                 project_id=project_id,
                 import_id=import_id,
                 requested_paths=[str(item.get("relative_path") or "") for item in files],
+                request_payload=request_payload,
+                session_response=session_response,
             )
         except Exception as exc:
             last_error = exc
@@ -349,6 +357,8 @@ def _poll_import(
     token: str,
     project_id: str,
     import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
     timeout_sec: int,
     interval_sec: float,
 ) -> dict[str, Any]:
@@ -368,8 +378,14 @@ def _poll_import(
             retries=2,
             label="poll-import",
         )
-        last = decode_import_job_response(response, project_id=project_id, import_id=import_id)
-        status = str(last["status"])
+        last = decode_import_job_response(
+            response,
+            project_id=project_id,
+            import_id=import_id,
+            request_payload=request_payload,
+            session_response=session_response,
+        )
+        status = cast(str, last["status"])
         if status in IMPORT_TERMINAL_STATUSES:
             return last
         if time.monotonic() >= deadline:

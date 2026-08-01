@@ -86,7 +86,10 @@ avia import create \
 Validation fully decodes every image and rejects all symbolic links in the source tree, including
 broken links and linked directories. The shared scanner also rejects FIFOs, sockets, devices, and
 every other non-regular member instead of silently omitting it. Inspection, verification, and
-upload always process the complete dataset through folder sessions.
+upload always process the complete dataset through folder sessions. Only descendants of an actual
+source-root `.avia/imports` directory are client state. An exact `.avia/imports` regular file and
+every other root or nested `.avia` member enter the manifest and are validated or rejected rather
+than hidden.
 
 After validation, each upload is bound to the same regular-file identity used to compute its
 SHA-256 and dimensions. Hashing and PUT retries use an `O_NOFOLLOW`
@@ -106,7 +109,9 @@ set and regular-file identities, then rehashes every file already marked uploade
 its SHA-256 before any network request.
 
 YOLO validation is task-specific: exact row widths, finite normalized values,
-declared class bounds, runtime-valid segment masks, OBB geometry, and pose `kpt_shape` are enforced.
+declared class bounds, runtime-valid segment masks, OBB geometry, and pose `kpt_shape=[K,3]` with
+`1 <= K <= 2048` are enforced. `nc` is parsed as a strict class count, so 10000 is valid while
+class ids remain bounded to `0..9999`; quoted, signed, padded, or coercible scalar aliases fail.
 Segment topology follows the AviaTraining/Ultralytics consumer: canonical thin bridges from
 `merge_multi_segment` are accepted, while rasterizable crossings or non-canonical bridge topology
 produce structured `yolo_segment_topology` warnings with exact file and line instead of rejecting
@@ -127,30 +132,55 @@ reports the sole binary taxonomy `["good", "bad"]`. The same role inventory
 drives inspection, validation, manifest generation, and upload JSON: source
 samples are `image_count`, YOLO/COCO annotations are `label_count`, and
 Anomalib `ground_truth/**` members are exclusively `mask_count`.
+Inspection returns the actual class catalog by reusing COCO's strict category parser and
+ImageNet's validation-owned role-directory/inventory index; it never substitutes `[]` for an
+available catalog or rescans the complete source tree.
 Validation errors exit non-zero; missing labels or unknown classes are never warnings.
 For multilabel classification, an existing empty label file is an explicit
 negative sample; an absent label file remains an error.
 
-COCO polygon and RLE segmentation are both rasterized with `pycocotools`, then must produce one
-connected mask without holes. The unique full contour is filled back into a mask and must equal
-the source mask pixel-for-pixel, proving it can be represented losslessly by one YOLO polygon.
+HTTP responses, resume/cleanup state, auth config, and COCO share one strict JSON decoder that
+rejects duplicate keys recursively and every non-finite decoded number, including finite-syntax
+overflow. Every annotation requires positive
+finite `area` and strict integer `iscrowd` in `0|1`; every split repeats the complete category
+identity after canonical ordering by category id, including extension fields. Canonical JSON
+identity ignores category-array and object-key order but preserves nested array order and JSON
+value types. Pose categories share one exact keypoint and
+skeleton schema with complete left/right pairs and unique undirected edges; missing skeleton is `[]`, `num_keypoints` may be
+absent, and visibility-zero coordinates are accepted only inside the image. Polygon and RLE
+segmentation are rasterized with
+`pycocotools`; uncompressed counts cover the exact image and allow zero only in their first run.
+The result must be one connected mask without holes. Its unique full contour is filled back into a
+mask and must equal the source mask pixel-for-pixel, proving lossless one-polygon representation.
 Exact cross-split taxonomy, image coverage, duplicate split membership, pose metadata, and
 bounding-box corners are also validated. Anomalib masks must be non-empty binary single-channel
 images with the same dimensions as their defect image.
 
 API bases are canonical absolute `http(s)` URLs without credentials, queries, fragments,
 whitespace, default ports, or trailing slashes. Session, signed-URL, batch-complete, finalization,
-and poll responses use exact field and status decoders; historical aliases are rejected.
+and poll responses use exact field and status decoders; historical aliases are rejected. Import ids
+are one ASCII path component: `imp_` plus non-empty letters, digits, underscore, or hyphen. Path
+separators, dot forms, percent encodings, whitespace, Unicode, and controls are rejected; any
+allowed suffix character, including underscore or hyphen, may appear first.
+Signed responses remain bound to the session workspace, and every object key equals the exact
+session import prefix plus `/files/<relative-path>` before any PUT starts.
+Every submitted PUT is settled before return. A resume-state write error cannot skip executor
+shutdown or hide later successful remote side effects: the CLI records all successes, attempts one
+final durable state write, and then raises the complete PUT/state/completion error set.
 Object-prefix imports bind classes to the selected format: YOLO uses the validated `--class`
 values, Anomalib/AD automatically sends the sole `["good", "bad"]` taxonomy, and COCO/ImageNet
 send no classes. `--class` is rejected for every non-YOLO format. A successful source-import
 response must carry the complete pre-materialization progress contract, including
 `uploaded == file_count`, `image_count == 0`, and `streamed == 0`; the client does not accept a
-reduced or historical response shape.
+reduced or historical response shape. The S3 `source_version_id` is preserved as an opaque exact
+string, including Unicode, whitespace, and newlines. It must encode to 1..1024 UTF-8 bytes and
+must not equal the exact `null` sentinel; the CLI never trims, normalizes, or coerces it.
 Signed media types are exact lowercase ASCII `token/token` values without parameters,
 whitespace, controls, empty tokens, or extra slashes. Pre-publication responses cannot expose a
-dataset-version identity, while a succeeded poll requires matching `dataset_version_id` and
-`version_ref.dataset_version_id`. Auth
+dataset-version identity, while a succeeded poll requires the exact ten-field materialized lakeFS
+`version_ref`. Its id is exactly `dsv_<import_id suffix>`, its prefix is exactly
+`dataset-manifests/<session project_scope_id>/<dataset_version_id>`, and its tag, exact
+`<path_prefix>/manifest.json`, digest, and counts close the same identity. Auth
 refresh occurs only for `401` or explicit `token_expired`, never `403`, and an explicit token is
 never associated with environment password or refresh-token credentials from another identity.
 

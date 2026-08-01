@@ -46,15 +46,22 @@ def require_canonical_class_catalog(
 
 
 def require_canonical_class_index(value: object, *, label: str) -> int:
-    if type(value) is int:
-        index = value
-    elif type(value) is str and _CANONICAL_DECIMAL_INDEX.fullmatch(value) is not None:
-        index = int(value)
-    else:
-        raise ValueError(f"{label} must be a non-negative integer or canonical decimal string")
-    if index < 0 or index > MAX_CLASS_ID:
+    index = require_canonical_nonnegative_integer(value, label=label)
+    if index > MAX_CLASS_ID:
         raise ValueError(f"{label} must be between 0 and {MAX_CLASS_ID}")
     return index
+
+
+def require_canonical_nonnegative_integer(value: object, *, label: str) -> int:
+    if type(value) is int:
+        result = value
+    elif type(value) is str and _CANONICAL_DECIMAL_INDEX.fullmatch(value) is not None:
+        result = int(value)
+    else:
+        raise ValueError(f"{label} must be a non-negative integer or canonical decimal string")
+    if result < 0:
+        raise ValueError(f"{label} must be a non-negative integer or canonical decimal string")
+    return result
 
 
 def require_indexed_class_catalog(value: object, *, label: str) -> list[str]:
@@ -105,6 +112,7 @@ __all__ = [
     "MAX_CLASS_NAME_CODEPOINTS",
     "require_canonical_class_catalog",
     "require_canonical_class_index",
+    "require_canonical_nonnegative_integer",
     "require_class_count",
     "require_indexed_class_catalog",
 ]

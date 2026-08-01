@@ -13,6 +13,7 @@ from filelock import FileLock
 
 from avia_cli.core.api_base import canonical_api_base
 from avia_cli.core.atomic_file import durable_atomic_write, read_regular_file
+from avia_cli.core.strict_json import strict_json_loads
 
 _SERVICE_NAME = "avia-cli"
 _DEFAULT_PROFILE = "default"
@@ -75,8 +76,8 @@ def _read_config() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        config = json.loads(read_regular_file(path).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        config = strict_json_loads(read_regular_file(path).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
         raise RuntimeError(f"Invalid Avia CLI config: {path}") from exc
     if not isinstance(config, dict) or set(config) != _CONFIG_FIELDS:
         raise RuntimeError(f"Invalid Avia CLI config fields: {path}")

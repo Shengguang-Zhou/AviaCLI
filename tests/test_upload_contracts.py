@@ -188,6 +188,70 @@ def test_resume_state_identity_includes_task_key(tmp_path: Path) -> None:
     assert state["task_key"] == "pose"
 
 
+@pytest.mark.parametrize("duplicate_location", ["top", "session", "file"])
+def test_resume_state_rejects_duplicate_json_fields_recursively(
+    tmp_path: Path,
+    duplicate_location: str,
+) -> None:
+    path = _write_state(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.dumps(payload, sort_keys=True)
+    if duplicate_location == "top":
+        raw = raw.replace(
+            '"phase": "uploading"',
+            '"phase": "uploading", "phase": "uploading"',
+            1,
+        )
+    elif duplicate_location == "session":
+        raw = raw.replace(
+            '"status": "pending_upload"',
+            '"status": "pending_upload", "status": "pending_upload"',
+            1,
+        )
+    else:
+        entry = json.dumps(payload["files"]["classes.txt"], sort_keys=True)
+        files = json.dumps(payload["files"], sort_keys=True)
+        duplicate_files = f'{{"classes.txt": {entry}, "classes.txt": {entry}}}'
+        assert files in raw
+        raw = raw.replace(files, duplicate_files, 1)
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="duplicate JSON field"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
+def test_resume_state_rejects_uploaded_object_outside_dataset_session(tmp_path: Path) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state_file = state["files"]["classes.txt"]
+    state_file.update(
+        {
+            "uploaded": True,
+            "sha256": "a" * 64,
+            "content_type": "text/plain",
+            "object_key": "foreign/import/files/classes.txt",
+        }
+    )
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="object_key does not match dataset session"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
 def test_resume_rejects_completed_state_with_prepublication_version_reference(
     tmp_path: Path,
 ) -> None:
@@ -232,7 +296,7 @@ def test_resume_rejects_completion_manifest_drift_from_persisted_session(
     state["complete_response"] = complete
     path.write_text(json.dumps(state), encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="object_key"):
+    with pytest.raises(SystemExit, match="exact project_assets workspace/scope import manifest"):
         _load_resume_state(
             state_dir=tmp_path,
             project_id="proj_123456789abc",
@@ -851,7 +915,10 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
                 {
                     **item,
                     "content_type": content_type,
-                    "object_key": f"objects/{relative_path}",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/"
+                        f"imp_server_mime/files/{relative_path}"
+                    ),
                     "upload_url": f"https://objects.example/{relative_path}",
                     "required_headers": {"Content-Type": content_type},
                     "expires_in": 900,
@@ -981,7 +1048,18 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
                 "error": {},
                 "dataset_validation": None,
                 "dataset_version_id": "dsv_exact_flow",
-                "version_ref": {"dataset_version_id": "dsv_exact_flow"},
+                "version_ref": {
+                    "dataset_version_id": "dsv_exact_flow",
+                    "storage_kind": "minio_lakefs",
+                    "lakefs_repo": "avia-datasets",
+                    "lakefs_commit": "commit-exact-flow",
+                    "lakefs_tag": "dsv_exact_flow",
+                    "path_prefix": ("dataset-manifests/scope_exact/dsv_exact_flow"),
+                    "manifest_path": ("dataset-manifests/scope_exact/dsv_exact_flow/manifest.json"),
+                    "content_digest": f"sha256:{'a' * 64}",
+                    "item_count": 1,
+                    "byte_count": 1,
+                },
             },
         ]
     )
@@ -1026,7 +1104,10 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
                     {
                         **item,
                         "content_type": f"application/x-avia-file-{index}",
-                        "object_key": f"imports/imp_exact_flow/files/{item['relative_path']}",
+                        "object_key": (
+                            "project_assets/ws_exact/scope_exact/imports/"
+                            f"imp_exact_flow/files/{item['relative_path']}"
+                        ),
                         "upload_url": f"https://objects.example/{index}",
                         "required_headers": {"Content-Type": f"application/x-avia-file-{index}"},
                         "expires_in": 900,
@@ -1235,7 +1316,10 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
                     "relative_path": item["relative_path"],
                     "content_type": "application/octet-stream",
                     "upload_url": f"https://objects.example/{item['relative_path']}",
-                    "object_key": f"objects/{item['relative_path']}",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/"
+                        f"imp_concurrent_failure/files/{item['relative_path']}"
+                    ),
                     "required_headers": {"Content-Type": "application/octet-stream"},
                 }
                 for item in kwargs["files"]
@@ -1340,7 +1424,10 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
                     "relative_path": item["relative_path"],
                     "content_type": "application/octet-stream",
                     "upload_url": f"https://objects.example/{item['relative_path']}",
-                    "object_key": f"objects/{item['relative_path']}",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/"
+                        f"imp_stream_failure/files/{item['relative_path']}"
+                    ),
                     "required_headers": {"Content-Type": "application/octet-stream"},
                 }
                 for item in kwargs["files"]

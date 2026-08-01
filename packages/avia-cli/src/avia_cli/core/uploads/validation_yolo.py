@@ -354,9 +354,10 @@ def _validate_pose(values: list[float], kpt_shape: object) -> str | None:
         or len(kpt_shape) != 2
         or any(isinstance(value, bool) or not isinstance(value, int) for value in kpt_shape)
         or int(kpt_shape[0]) <= 0
-        or int(kpt_shape[1]) not in {2, 3}
+        or int(kpt_shape[0]) > 2048
+        or int(kpt_shape[1]) != 3
     ):
-        return "pose metadata must declare exact kpt_shape=[K,D] with D equal to 2 or 3"
+        return "pose metadata must declare exact kpt_shape=[K,3] with 1 <= K <= 2048"
     keypoint_count, dimensions = int(kpt_shape[0]), int(kpt_shape[1])
     expected = 4 + keypoint_count * dimensions
     if len(values) != expected:
@@ -369,7 +370,7 @@ def _validate_pose(values: list[float], kpt_shape: object) -> str | None:
         x, y = keypoints[offset : offset + 2]
         if x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
             return "keypoint x/y coordinates must be normalized to [0, 1]"
-        if dimensions == 3 and keypoints[offset + 2] not in {0.0, 1.0, 2.0}:
+        if keypoints[offset + 2] not in {0.0, 1.0, 2.0}:
             return "keypoint visibility must be exactly 0, 1, or 2"
     return None
 
@@ -380,12 +381,13 @@ def _validate_pose_metadata(kpt_shape: object, *, errors: list[dict[str, Any]]) 
         or len(kpt_shape) != 2
         or any(isinstance(value, bool) or not isinstance(value, int) for value in kpt_shape)
         or int(kpt_shape[0]) <= 0
-        or int(kpt_shape[1]) not in {2, 3}
+        or int(kpt_shape[0]) > 2048
+        or int(kpt_shape[1]) != 3
     ):
         errors.append(
             error(
                 "invalid_yolo_pose_metadata",
-                "pose datasets require exact kpt_shape=[K,D] metadata with D equal to 2 or 3",
+                "pose datasets require exact kpt_shape=[K,3] metadata with 1 <= K <= 2048",
             )
         )
 

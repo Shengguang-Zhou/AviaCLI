@@ -11,11 +11,12 @@ from avia_cli.core.uploads.inspect import (
     verify_dataset,
 )
 from avia_cli.core.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.response_contracts import IMPORT_STATUSES
 
 
 def handle_dataset_command(args) -> int:
     if args.dataset_command in {"scan", "inspect", "verify", "upload"}:
-        require_format_task(format_name=str(args.format), task_key=str(args.task_key))
+        require_format_task(format_name=args.format, task_key=args.task_key)
     if args.dataset_command == "scan":
         result = scan_source_manifest(args.source, format_name=str(args.format))
         result["format"] = str(args.format)
@@ -30,7 +31,10 @@ def handle_dataset_command(args) -> int:
             hash_workers=int(args.hash_workers),
         )
         _print_inspect_result(result, json_output=bool(args.json))
-        return 0 if str(result.get("status")) == "ok" else 1
+        status = result["status"]
+        if status not in {"ok", "failed"}:
+            raise RuntimeError("dataset inspect produced an invalid status")
+        return 0 if status == "ok" else 1
     if args.dataset_command == "verify":
         result = verify_dataset(
             source=args.source,
@@ -39,7 +43,10 @@ def handle_dataset_command(args) -> int:
             hash_workers=int(args.hash_workers),
         )
         _print_verify_result(result, json_output=bool(args.json))
-        return 0 if str(result.get("status")) == "ok" else 1
+        status = result["status"]
+        if status not in {"ok", "failed"}:
+            raise RuntimeError("dataset verify produced an invalid status")
+        return 0 if status == "ok" else 1
     prepared_upload = prepare_dataset_upload(args) if args.dataset_command == "upload" else None
     api = api_from_args(args)
     token = token_from_args(args, api=api)
@@ -72,10 +79,12 @@ def _print_upload_result(result: dict[str, object], *, json_output: bool) -> Non
     if json_output:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    job = result.get("job")
-    complete = result.get("complete")
-    status_source = job if isinstance(job, dict) else complete if isinstance(complete, dict) else {}
-    status = str(status_source.get("status", "queued"))
+    status_source = result["job"] if "job" in result else result.get("complete")
+    if not isinstance(status_source, dict):
+        raise RuntimeError("dataset upload result has no canonical status response")
+    status = status_source.get("status")
+    if not isinstance(status, str) or status not in IMPORT_STATUSES:
+        raise RuntimeError("dataset upload result status is invalid")
     print(
         f"uploaded {result['file_count']} files to project {result['project_id']} "
         f"(import_id={result['import_id']}, status={status})"

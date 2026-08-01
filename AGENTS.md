@@ -12,14 +12,21 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   COCO/ImageNet send an empty list. `--class` is a YOLO-only option. The accepted source-import
   progress is the control plane's exact pre-materialization shape, including
   `uploaded == file_count`, `image_count == 0`, and `streamed == 0`; missing or extra counters
-  are protocol errors.
+  are protocol errors. Its S3 `source_version_id` is one opaque exact string: preserve Unicode,
+  whitespace, and newlines byte-for-byte; require 1..1024 UTF-8 bytes and reject the exact `null`
+  version sentinel rather than padded variants. Never trim, normalize, coerce, or reuse
+  bucket/ETag validators for it.
 - Folder uploads generate a canonical lowercase UUIDv4 `idempotency_key`. A versioned
   pending-session state containing the exact request payload is atomically durable before the
   first session POST. `--resume` replays that payload and key after response loss.
 - Resume state has one current schema. Historical state shapes are rejected, not migrated or
   accepted through compatibility branches. Resume requires the exact original file set and
   stored regular-file identities; every file already marked uploaded is rehashed through its
-  verified descriptor and must match the persisted SHA-256 before any network request.
+  verified descriptor and must match the persisted SHA-256 before any network request. HTTP,
+  resume/cleanup state, auth config, and COCO documents share one strict JSON decoder that rejects
+  duplicate object keys recursively and rejects every non-finite decoded number, including
+  `NaN`/`Infinity` and finite-syntax overflow; parallel permissive decoders are
+  forbidden.
 - Every image is fully decoded before any HTTP request or state write. YOLO
   validation also compares decoded dimensions with manifest dimensions when present. The decoded
   Pillow format must exactly match the case-normalized suffix: JPG/JPEG is `JPEG`, PNG is `PNG`,
@@ -28,7 +35,10 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   lowercase source suffixes and lowercase `.png` masks.
 - One format-aware role inventory owns inspection, validation, manifest, and upload counts.
   Public JSON exposes `image_count`, `label_count`, and `mask_count`; Anomalib
-  `ground_truth/**` members count only as masks and never inflate image or label counts.
+  `ground_truth/**` members count only as masks and never inflate image or label counts. Inspect
+  returns the real class catalog: COCO reuses the strict annotation-category parser and ImageNet
+  reuses the same role-directory/inventory index as validation; neither fabricates an empty
+  catalog or performs a second full source scan.
 - Anomalib masks use Pillow's non-deprecated `get_flattened_data()` API, so the package requires
   Pillow 12.1 or newer; dependency metadata must not claim support for an older Pillow ABI.
 - Anomalib has one trainable folder contract: `train/good`, both
@@ -57,10 +67,25 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   polygons are accepted. Runtime-invalid rows remain errors; crossing or non-canonical bridge
   topology is emitted as a structured `yolo_segment_topology` warning with exact path and line.
   COCO-to-YOLO conversion remains stricter because it must prove lossless single-polygon output.
+- YOLO pose accepts only `kpt_shape=[K,3]` with `1 <= K <= 2048`, matching the control plane and
+  AviaTraining. COCO uses strict JSON with duplicate-field and non-finite-number rejection;
+  every annotation requires positive finite `area` and strict `iscrowd` in `0|1`. Every split
+  reproduces the complete categories identity after canonical ordering by category id, including
+  extension fields. Category identity is canonical JSON: category-array order and object-key order
+  are irrelevant, while nested array order and JSON value types are exact. All COCO pose categories
+  share one exact keypoint/skeleton schema with complete
+  left/right counterparts; an omitted skeleton is `[]`, `num_keypoints` is optional, and
+  visibility-zero coordinates remain valid only inside the image boundary. Skeleton edges are
+  unique as undirected keypoint pairs, so exact and reversed duplicates are both invalid.
+  Uncompressed COCO RLE covers the exact image area and permits zero only as its first run.
 - Dataset source trees must not contain symbolic links, including broken links and links to
   directories. FIFOs, sockets, devices, and every other non-regular member are rejected at the
   shared manifest boundary. Relative paths are unique canonical NFC POSIX paths. Only exact task
-  media, metadata, and explicitly documented provenance files are allowed.
+  media, metadata, and explicitly documented provenance files are allowed. The sole excluded
+  client state is the descendants of a source-root `.avia/imports` directory plus its directory
+  containers. An exact regular file named `.avia/imports`, another root `.avia` member, or any
+  nested `.avia` path is dataset content and must enter the manifest and fail explicit validation
+  rather than disappear.
 - Validation captures every regular-file identity. Hashing and every PUT retry must reuse an
   `O_NOFOLLOW` descriptor for that identity and fail on path, inode, size, or timestamp changes.
   Use the API-issued presigned URL unchanged; origin rewrites, Host overrides, and silent
@@ -74,14 +99,27 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   it for batch completion. Browser/host MIME guesses, dimensions, and completion metadata must
   never be echoed into the signing request or substituted during resume. The one media-type
   parser accepts exactly lowercase ASCII `token/token` without whitespace, parameters, controls,
-  empty sides, or additional slashes.
+  empty sides, or additional slashes. Every signed response is bound to the persisted session
+  workspace, and before PUT its object key must equal the session's exact
+  `<import-prefix>/files/<relative-path>`. Batch-complete and poll responses reproduce that same
+  workspace; persisted uploaded state revalidates the exact object key before resume.
 - A failed concurrent PUT or batch-complete request must not return while sibling operations are
-  still running. Drain them, persist every completed side effect to resume state, expose all
-  additional failures, then raise one structured aggregate error.
+  still running. A periodic state-write failure cannot bypass executor shutdown or future
+  settlement: drain every submitted future, record and make one final durable save of every
+  completed side effect, expose all PUT/state/completion failures, then raise one structured
+  aggregate error. Timing is observed immediately after its remote call returns, and progress may
+  be emitted between bounded periodic state flushes; either telemetry failure is held while the
+  completed side effect is attached to in-memory resume state and a final durable save is attempted.
+  Only then is the telemetry failure reported, together with any state failure. It must never turn a
+  completed PUT, batch completion, or import finalize into an unrecorded side effect.
 - Folder sessions are the only dataset-byte upload protocol.
 - API bases, server response fields, import identifiers, remote object identities, and import
   statuses have one canonical contract. Reject unknown fields, duplicate/missing signed entries,
-  mismatches, redirects, and historical status aliases.
+  mismatches, redirects, and historical status aliases. An import id is one 5..64-character ASCII
+  path component: `imp_` plus a non-empty sequence of letters, digits, underscore, or hyphen.
+  Separators, dot forms, percent encodings, whitespace, Unicode, control characters, and overlong
+  values are invalid identities; any of the four allowed suffix characters may be the first suffix
+  character.
 - Dataset-session and completion responses decode one exact nested `dataset_manifest_ref` plus
   `read_lease` model. Ref id, format, counts, canonical `project_assets/{workspace_id}/...`
   owner, MinIO manifest path/import prefix, outer object key, lease id, and lease target are bound
@@ -89,6 +127,10 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   identity, and completion must reproduce its workspace, manifest ref, object key, and lease;
   object-key components must be NFC, exactly trimmed, and free of every Unicode `Cc`; loose,
   foreign, malformed, or cross-phase replacement objects are contract failures.
+- A succeeded import owns exactly `dsv_<import_id suffix>`. Its materialized prefix is exactly
+  `dataset-manifests/<project_scope_id>/<dataset_version_id>`, where the scope comes from the
+  canonical session/list manifest owner, and its manifest is exactly `<path_prefix>/manifest.json`.
+  A self-consistent response for another import or scope is an identity violation.
 - Class catalogs use one validator across source imports, every dataset-format validation result,
   YOLO metadata/declared classes, folder upload, and resume state. Every name is non-empty,
   NFC-normalized, exactly trimmed, free of every Unicode `Cc` control (including DEL and C1), and unique.
@@ -99,14 +141,19 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
   API resolution or authentication. Indexed catalogs accept only a real non-negative integer or
   the canonical decimal string `0|[1-9][0-9]*`, require unique contiguous zero-based indices, and
   reject booleans, floats, signs, padding, and leading zeroes. YOLO `nc` is an exact positive
-  integer and must equal the catalog length; quoted or otherwise coercible counts are invalid.
+  integer class count and must equal the catalog length; `nc=10000` is valid while the largest
+  class id remains 9999. Never parse `nc` through the class-id upper bound. Its YAML node must be
+  an implicit plain scalar whose exact source slice is the canonical decimal; quotes, explicit
+  tags, anchors, signs, padding, separators, and other coercible forms are invalid.
 - `POST /projects/{project_id}/imports/{import_id}/complete` has one
   `avia.import-complete-queued/v1` response. A retry after response loss must decode the exact same
   persisted queued receipt, including non-empty `dispatch_mode` and `worker_task_id`; the client
   never weakens this contract or treats a partial replay response as success. Pending, uploaded,
   queued, running, and failed responses cannot expose a dataset-version identity; the client
-  accepts only absent or paired-null identity fields there. A succeeded poll requires matching
-  non-empty `dataset_version_id` and `version_ref.dataset_version_id`.
+  accepts only absent or paired-null identity fields there. A succeeded poll requires the exact
+  ten fields emitted by `dataset_version_ref()`, materialized `minio_lakefs` storage, positive
+  counts, canonical SHA-256 digest, complete lakeFS values, matching dataset id/tag, and a manifest
+  path closed over its path prefix. Reduced, extra, empty, or internally inconsistent refs fail.
 - Derive hashing/batching parameters locally. Probe transport RTT only against the first validated
   API-issued signed storage URL with a side-effect-free HEAD using the exact explicit proxy
   snapshot that PUT will use; never treat the control-plane API host as the storage host. A
@@ -139,7 +186,7 @@ The internal Woodpecker PR/manual workflow is the quality-gate source of truth. 
 image pin, while every ordinary step `image` is a host executable and must be absolute
 `/usr/bin/bash`. The first `host-toolchain` step hashes and executes the sole root-installed
 `/usr/local/bin/avia-verify-woodpecker-local-toolchain` contract at SHA-256
-`17b2610d5658a41bd5d60d6c1f865506ea68b7064fe1d0f39baabdaae7196b58`; it verifies the root
+`fec5345445da9a18a4eb834db24218d94ecd5116734c92b928c4f2a2710725a2`; it verifies the root
 policy broker's exact pipeline/repository/event/commit/approval identity plus the complete host
 toolchain. Do not duplicate a partial Bash/plugin-git verifier in this repository. Matrix
 combinations are separate

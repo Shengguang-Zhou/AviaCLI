@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from avia_cli.core.strict_json import strict_json_loads
+
 
 class _UploadHTTPError(RuntimeError):
     def __init__(self, *, status: int, reason: str, detail: str) -> None:
@@ -73,8 +75,8 @@ def format_avia_http_error(exc: _AviaHTTPError) -> str:
     payload: object = None
     if message:
         try:
-            payload = json.loads(message)
-        except json.JSONDecodeError:
+            payload = strict_json_loads(message)
+        except ValueError:
             payload = None
     if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
         error = payload["error"]
@@ -103,7 +105,7 @@ def decode_json_response(raw: bytes, *, url: str) -> dict[str, Any]:
             )
         ) from exc
     try:
-        payload = json.loads(text)
+        payload = strict_json_loads(text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             json.dumps(
@@ -113,6 +115,18 @@ def decode_json_response(raw: bytes, *, url: str) -> dict[str, Any]:
                     "url": url,
                     "line": exc.lineno,
                     "column": exc.colno,
+                },
+                ensure_ascii=False,
+            )
+        ) from exc
+    except ValueError as exc:
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "code": "invalid_json_response",
+                    "message": "HTTP response violates the strict JSON contract",
+                    "url": url,
+                    "reason": str(exc),
                 },
                 ensure_ascii=False,
             )
