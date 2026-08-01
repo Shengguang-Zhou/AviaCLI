@@ -7,9 +7,13 @@ from typing import Any
 from urllib import parse
 
 from avia_cli.core.uploads.api import _project_path, _request_json_with_retries
-from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES, require_format_task
+from avia_cli.core.uploads.contracts import (
+    ANOMALIB_CLASSES,
+    require_format_task,
+)
+from avia_cli.core.uploads.class_catalog import require_canonical_class_catalog
 from avia_cli.core.uploads.inventory import require_manifest_inventory
-from avia_cli.core.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.manifest import ManifestImageError, scan_source_manifest
 from avia_cli.core.atomic_file import read_regular_file
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_STATUSES,
@@ -38,7 +42,7 @@ def _manifest_image_failure(
     source: str | Path,
     format_name: str,
     task_key: str,
-    error: RuntimeError,
+    error: ManifestImageError,
 ) -> dict[str, Any]:
     expected_format = getattr(error, "expected_format", None)
     actual_format = getattr(error, "actual_format", None)
@@ -90,14 +94,21 @@ def inspect_dataset(
             hash_workers=hash_workers,
             format_name=format_name,
         )
-    except RuntimeError as exc:
+    except ManifestImageError as exc:
         return _manifest_image_failure(
             source=source,
             format_name=format_name,
             task_key=task_key,
             error=exc,
         )
-    return _manifest_summary(manifest, format_name=format_name, task_key=task_key)
+    return {
+        **_manifest_summary(manifest, format_name=format_name, task_key=task_key),
+        "status": "ok",
+        "error_count": 0,
+        "warning_count": 0,
+        "errors": [],
+        "warnings": [],
+    }
 
 
 def verify_dataset(
@@ -115,7 +126,7 @@ def verify_dataset(
             hash_workers=hash_workers,
             format_name=format_name,
         )
-    except RuntimeError as exc:
+    except ManifestImageError as exc:
         return _manifest_image_failure(
             source=source,
             format_name=format_name,
@@ -200,7 +211,12 @@ def _manifest_summary(
 def _manifest_classes(manifest: dict[str, object], *, format_name: str) -> list[str]:
     if format_name == "anomalib":
         return list(ANOMALIB_CLASSES)
-    return [str(item) for item in list(manifest.get("classes") or [])]
+    classes = manifest.get("classes")
+    return require_canonical_class_catalog(
+        [] if classes is None else classes,
+        label="manifest classes",
+        allow_empty=True,
+    )
 
 
 def _list_server_imports(

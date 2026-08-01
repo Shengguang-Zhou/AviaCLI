@@ -6,6 +6,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from avia_cli.core.uploads.class_catalog import require_canonical_class_catalog
 from avia_cli.core.uploads.inventory import DatasetRoleInventory
 from avia_cli.core.uploads.metadata import read_yolo_metadata
 from avia_cli.core.uploads.validation_common import (
@@ -38,7 +39,7 @@ def validate_yolo(
     except SystemExit as exc:
         metadata = {}
         errors.append(error("invalid_yolo_metadata", str(exc)))
-    metadata_classes = [str(name) for name in list(metadata.get("names") or [])]
+    metadata_classes = list(metadata.get("names") or [])
     classes = _resolve_classes(
         metadata_classes=metadata_classes,
         declared_classes=declared_classes,
@@ -138,28 +139,29 @@ def _resolve_classes(
 ) -> list[str]:
     if declared_classes is None:
         return metadata_classes
-    if (
-        not declared_classes
-        or any(not name or name != name.strip() for name in declared_classes)
-        or len(set(declared_classes)) != len(declared_classes)
-    ):
+    try:
+        canonical_declared_classes = require_canonical_class_catalog(
+            declared_classes,
+            label="--class values",
+        )
+    except ValueError as exc:
         errors.append(
             error(
                 "invalid_declared_class_names",
-                "--class values must be non-empty, unique, and have no surrounding whitespace",
+                str(exc),
             )
         )
         return []
-    if metadata_classes and declared_classes != metadata_classes:
+    if metadata_classes and canonical_declared_classes != metadata_classes:
         errors.append(
             error(
                 "conflicting_class_names",
                 "--class values must exactly match YOLO dataset metadata when both are present",
                 metadata_classes=metadata_classes,
-                declared_classes=declared_classes,
+                declared_classes=canonical_declared_classes,
             )
         )
-    return declared_classes
+    return canonical_declared_classes
 
 
 def _label_path_for_image(image_path: str) -> str:

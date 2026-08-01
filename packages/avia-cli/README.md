@@ -49,7 +49,7 @@ avia dataset verify \
   --json
 ```
 
-`--format` and `--task-key` are required for dataset scan, source import,
+`--format` and `--task-key` are required for `avia dataset scan`, source import creation,
 folder upload, inspect, and verify. There is no task inference
 and no detection default. The accepted matrix is exact:
 
@@ -94,7 +94,8 @@ descriptor and fail if the path, inode, size, or timestamps change. Presigned UR
 the Avia API are used exactly as issued; the CLI has no origin rewrite, Host override, or hidden
 alternate transport. Folder PUTs use one case-insensitive required-header validator: `Host` and
 `Transfer-Encoding` are forbidden, `Content-Length` must match the verified file exactly, and
-only typed transport failures or HTTP 408/429/5xx are retried. CPU parameters are derived locally;
+only typed transport failures or exactly HTTP 408/429/500/502/503/504 are retried. CPU parameters
+are derived locally;
 transport concurrency probes the first API-issued storage URL, never the control-plane host.
 
 Folder upload creates a canonical UUIDv4 idempotency key and atomically writes the sole current
@@ -170,12 +171,18 @@ The published distribution is intentionally a single package. Internal modules
 under `avia_cli.core` keep auth and upload code reusable without exposing a
 separate SDK package before that API is stable.
 
-Internal PR/manual CI uses Woodpecker 3.14's local backend, where
+Internal PR/manual CI uses Woodpecker 3.17's local backend, where
 `woodpeckerci/plugin-git:2.9.2` is the host clone plugin identifier rather than an OCI image pin.
+Before any repository-owned quality command, the host-toolchain lane hashes and executes the
+single root-installed policy verifier. It binds the live Woodpecker repository, event, exact
+commit, approval, local agent, proxy, and host toolchain identities; this repository does not
+maintain a weaker copy of those checks.
 The complete shallow fetch disables LFS and partial clone. After the commit is fetched, checkout
-cannot open a second promisor-remote TLS request. Clone-only NETRC credentials are rejected by
-every ordinary `/usr/bin/bash` step. The workflow shares
+cannot open a second promisor-remote TLS request. The first ordinary host-toolchain step rejects
+every nonempty clone-only `CI_NETRC_*` variable before later repository commands can run. The
+workflow shares
 `/mnt/data/avia/cache/uv` with the AVR repositories and uses same-device hardlinks; custom checkout
-scripts, per-repository uv caches, and copy mode are not part of the CI contract. The root project
+scripts, per-repository NETRC guards, per-repository uv caches, and copy mode are not part of the
+CI contract. The root project
 pins uv 0.8.3; separate Python 3.10, 3.11, and 3.12 matrix workflows run owned-warning
 quality gates before the Python 3.12 workflow builds the package once.

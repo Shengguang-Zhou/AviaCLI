@@ -14,12 +14,20 @@ from typing import Any, Iterable, Iterator
 from filelock import FileLock, Timeout
 
 from avia_cli.core.api_base import canonical_api_base
-from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES, require_object_prefix_uri
+from avia_cli.core.uploads.contracts import (
+    ANOMALIB_CLASSES,
+    require_folder_class_catalog,
+    require_format_task,
+    require_object_prefix_uri,
+)
 from avia_cli.core.uploads.inventory import is_dataset_image_path
 from avia_cli.core.uploads.media_types import require_canonical_media_type
-from avia_cli.core.uploads.response_contracts import validate_source_import_request
 from avia_cli.core.atomic_file import durable_atomic_write, read_regular_file
-from avia_cli.core.uploads.response_contracts import decode_complete_import_response
+from avia_cli.core.uploads.response_contracts import (
+    decode_complete_import_response,
+    decode_dataset_session_response,
+    validate_source_import_request,
+)
 from avia_cli.core.uploads.source_file import SourceIdentity, open_verified_source
 
 _SESSION_PAYLOAD_FIELDS = {
@@ -42,6 +50,7 @@ _STATE_FIELDS = {
     "project_id",
     "schema_version",
     "session_payload",
+    "session_response",
     "source",
     "task_key",
 }
@@ -340,8 +349,8 @@ def _load_resume_state(
 def _validate_state(state: dict[str, Any], *, path: Path) -> None:
     if set(state) != _STATE_FIELDS:
         raise ValueError("state fields must be exact")
-    if state.get("schema_version") != 4:
-        raise ValueError("state schema_version must be 4")
+    if state.get("schema_version") != 5:
+        raise ValueError("state schema_version must be 5")
     phase = state.get("phase")
     if phase not in {"session_pending", "uploading", "completed"}:
         raise ValueError("state phase is invalid")
@@ -350,6 +359,16 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
         raise ValueError("session_pending state must not have import_id")
     if phase != "session_pending" and (not isinstance(import_id, str) or not import_id):
         raise ValueError("uploading/completed state requires import_id")
+    if isinstance(import_id, str) and (
+        not import_id.startswith("imp_") or len(import_id) == len("imp_")
+    ):
+        raise ValueError("state import_id must be a canonical imp_ identity")
+    session_response = state.get("session_response")
+    if phase == "session_pending":
+        if session_response is not None:
+            raise ValueError("session_pending state must not have session_response")
+    elif not isinstance(session_response, dict) or not session_response:
+        raise ValueError("uploading/completed state requires session_response")
     complete_response = state.get("complete_response")
     if phase == "completed":
         if not isinstance(complete_response, dict) or not complete_response:
@@ -372,31 +391,57 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
         raise ValueError("session_payload fields must be exact")
     if session_payload.get("idempotency_key") != state.get("idempotency_key"):
         raise ValueError("session_payload idempotency_key mismatch")
+    if session_payload.get("format") != state.get("format"):
+        raise ValueError("session_payload format does not match state format")
+    if session_payload.get("task_key") != state.get("task_key"):
+        raise ValueError("session_payload task_key does not match state task_key")
+    if session_payload.get("root_name") != Path(str(state["source"])).name:
+        raise ValueError("session_payload root_name does not match state source")
+    try:
+        format_name, _task_key = require_format_task(
+            format_name=str(state["format"]),
+            task_key=str(state["task_key"]),
+        )
+    except SystemExit as exc:
+        raise ValueError(str(exc)) from exc
+    for key in ("format", "root_name", "task_key"):
+        value = session_payload.get(key)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError(f"session_payload {key} must be canonical")
+    require_folder_class_catalog(
+        session_payload.get("classes"),
+        format_name=format_name,
+        label="session_payload classes",
+    )
+    for key in ("file_count", "total_bytes"):
+        value = session_payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"session_payload {key} must be a positive integer")
+    if phase != "session_pending":
+        assert isinstance(session_response, dict)
+        try:
+            decode_dataset_session_response(
+                session_response,
+                project_id=str(state["project_id"]),
+                request_payload=session_payload,
+            )
+        except RuntimeError as exc:
+            raise ValueError(f"state session_response is invalid: {exc}") from exc
+        if session_response.get("import_id") != import_id:
+            raise ValueError("state session_response import_id mismatch")
     if phase == "completed":
         assert isinstance(complete_response, dict)
+        assert isinstance(session_response, dict)
         try:
             decode_complete_import_response(
                 complete_response,
                 project_id=str(state["project_id"]),
                 import_id=str(state["import_id"]),
+                request_payload=session_payload,
+                session_response=session_response,
             )
         except RuntimeError as exc:
             raise ValueError(f"completed state response is invalid: {exc}") from exc
-    for key in ("format", "root_name", "task_key"):
-        value = session_payload.get(key)
-        if not isinstance(value, str) or not value or value != value.strip():
-            raise ValueError(f"session_payload {key} must be canonical")
-    classes = session_payload.get("classes")
-    if (
-        not isinstance(classes, list)
-        or any(not isinstance(item, str) or not item or item != item.strip() for item in classes)
-        or len(set(classes)) != len(classes)
-    ):
-        raise ValueError("session_payload classes must be unique canonical strings")
-    for key in ("file_count", "total_bytes"):
-        value = session_payload.get(key)
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"session_payload {key} must be a positive integer")
     files = state.get("files")
     if not isinstance(files, dict) or not files:
         raise ValueError("state files must be a non-empty object")

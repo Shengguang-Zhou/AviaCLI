@@ -20,6 +20,10 @@ from avia_cli.core.uploads.autotune import (
     detect_storage_kind,
     probe_rtt_seconds,
 )
+from avia_cli.core.uploads.contracts import (
+    require_folder_class_catalog,
+    require_format_task,
+)
 from avia_cli.core.uploads.api import (
     _batch_upload_urls,
     _complete_dataset_file_batch,
@@ -31,7 +35,6 @@ from avia_cli.core.uploads.api import (
     _put_file_with_retries,
 )
 from avia_cli.core.uploads.manifest import scan_source_manifest
-from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_TERMINAL_STATUSES,
     decode_source_import_response,
@@ -248,8 +251,11 @@ def _resolve_transport_concurrency(args: object, *, route: UploadTransportRoute)
 def prepare_dataset_upload(args: object) -> PreparedDatasetUpload:
     """Complete every local scan and dataset validation before authentication."""
 
-    format_name = str(args.format)
-    declared_classes = [str(name) for name in list(args.class_name or [])] or None
+    format_name, task_key = require_format_task(
+        format_name=str(args.format),
+        task_key=str(args.task_key),
+    )
+    declared_classes = list(args.class_name or []) or None
     if declared_classes is not None and format_name != "yolo":
         raise SystemExit("--class is only valid with --format yolo")
     configured_hash_workers = getattr(args, "hash_workers", None)
@@ -271,7 +277,7 @@ def prepare_dataset_upload(args: object) -> PreparedDatasetUpload:
         source_root=source_root,
         manifest=manifest,
         format_name=format_name,
-        task_key=str(args.task_key),
+        task_key=task_key,
         declared_classes=declared_classes,
     )
     if validation_warnings:
@@ -344,15 +350,6 @@ def upload_prepared_dataset(
         return result
 
 
-def upload_dataset(args: object, *, api: str, token: object) -> dict[str, Any]:
-    return upload_prepared_dataset(
-        args,
-        api=api,
-        token=token,
-        prepared=prepare_dataset_upload(args),
-    )
-
-
 def _upload_validated_dataset(
     *,
     args: object,
@@ -402,13 +399,14 @@ def _upload_validated_dataset(
             idempotency_key=idempotency_key,
         )
         state = {
-            "schema_version": 4,
+            "schema_version": 5,
             "phase": "session_pending",
             "api": api,
             "project_id": project_id,
             "import_id": None,
             "idempotency_key": idempotency_key,
             "session_payload": session_payload,
+            "session_response": None,
             "source": str(source_root),
             "format": str(args.format),
             "task_key": str(args.task_key),
@@ -457,6 +455,7 @@ def _upload_validated_dataset(
         if not import_id:
             raise SystemExit("dataset-session response did not include import_id")
         state["import_id"] = import_id
+        state["session_response"] = session
         state["phase"] = "uploading"
         _save_state(state_dir, state)
 
@@ -811,6 +810,8 @@ def _upload_validated_dataset(
         token=token,
         project_id=project_id,
         import_id=import_id,
+        request_payload=dict(state["session_payload"]),
+        session_response=dict(state["session_response"]),
     )
     state["phase"] = "completed"
     state["complete_response"] = complete
@@ -845,15 +846,19 @@ def _upload_validated_dataset(
             raise RuntimeError(f"poll returned non-terminal status: {status!r}")
         if status == "failed":
             raise SystemExit(json.dumps(result, ensure_ascii=False))
-    return attach_upload_refs(result)
+    result["dataset_manifest_ref"] = complete["dataset_manifest_ref"]
+    result["read_lease"] = complete["read_lease"]
+    return result
 
 
 def _dataset_session_payload(
     *, manifest: dict[str, object], args: object, idempotency_key: str
 ) -> dict[str, object]:
-    classes = list(getattr(args, "class_name", None) or []) or [
-        str(item).strip() for item in list(manifest.get("classes") or []) if str(item).strip()
-    ]
+    classes = require_folder_class_catalog(
+        list(getattr(args, "class_name", None) or []) or manifest.get("classes"),
+        format_name=str(args.format),
+        label="dataset session classes",
+    )
     return {
         "idempotency_key": idempotency_key,
         "format": str(args.format),

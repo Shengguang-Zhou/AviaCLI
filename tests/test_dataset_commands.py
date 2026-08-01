@@ -138,7 +138,6 @@ def test_numeric_cli_contracts_reject_invalid_values_before_execution(argv: list
 @pytest.mark.parametrize(
     "argv",
     [
-        ["import", "scan", "--source", "/data/example"],
         [
             "import",
             "create",
@@ -167,6 +166,59 @@ def test_dataset_commands_require_explicit_format_and_task_key(argv: list[str]) 
         parser.parse_args(argv)
 
 
+def test_dataset_inspect_returns_nonzero_for_a_real_corrupt_image(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "dataset"
+    _write_yolo_dataset(source)
+    (source / "images" / "train" / "a.jpg").write_bytes(b"not-an-image")
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "inspect",
+            "--source",
+            str(source),
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+            "--json",
+        ]
+    )
+
+    assert handle_dataset_command(args) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed"
+    assert payload["error_count"] == 1
+
+
+def test_dataset_inspect_returns_zero_for_a_real_valid_image(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "dataset"
+    _write_yolo_dataset(source)
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "inspect",
+            "--source",
+            str(source),
+            "--format",
+            "yolo",
+            "--task-key",
+            "detect",
+            "--json",
+        ]
+    )
+
+    assert handle_dataset_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["error_count"] == 0
+
+
 def test_dataset_upload_completes_local_validation_before_authentication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -193,6 +245,71 @@ def test_dataset_upload_completes_local_validation_before_authentication(
     )
 
     with pytest.raises(SystemExit, match="--class is only valid with --format yolo"):
+        handle_dataset_command(args)
+
+
+@pytest.mark.parametrize(
+    "class_name",
+    ["air\tcraft", "air\x7fcraft", "air\u0085craft", "e\u0301"],
+)
+def test_coco_class_catalog_fails_before_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    class_name: str,
+) -> None:
+    images = tmp_path / "images"
+    annotations = tmp_path / "annotations"
+    images.mkdir()
+    annotations.mkdir()
+    Image.new("RGB", (16, 12)).save(images / "sample.png")
+    (annotations / "instances.json").write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": 1,
+                        "file_name": "images/sample.png",
+                        "width": 16,
+                        "height": 12,
+                    }
+                ],
+                "categories": [{"id": 1, "name": class_name}],
+                "annotations": [
+                    {
+                        "id": 1,
+                        "image_id": 1,
+                        "category_id": 1,
+                        "bbox": [1, 2, 5, 4],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123abc456def",
+            "--source",
+            str(tmp_path),
+            "--format",
+            "coco",
+            "--task-key",
+            "detect",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.dataset.api_from_args",
+        lambda *_args, **_kwargs: pytest.fail("API resolution ran before local validation"),
+    )
+    monkeypatch.setattr(
+        "avia_cli.commands.dataset.token_from_args",
+        lambda *_args, **_kwargs: pytest.fail("authentication ran before local validation"),
+    )
+
+    with pytest.raises(SystemExit, match="invalid_class_catalog"):
         handle_dataset_command(args)
 
 
@@ -328,7 +445,17 @@ def test_source_import_rejects_noncanonical_object_prefix_before_auth(
         handle_import_command(args)
 
 
-@pytest.mark.parametrize("classes", [["plane", "plane"], [""]])
+@pytest.mark.parametrize(
+    "classes",
+    [
+        ["plane", "plane"],
+        [""],
+        ["air\tcraft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+        ["e\u0301"],
+    ],
+)
 def test_source_import_rejects_invalid_classes_before_auth(
     classes: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -352,7 +479,7 @@ def test_source_import_rejects_invalid_classes_before_auth(
         lambda _args: pytest.fail("invalid source-import classes reached auth resolution"),
     )
 
-    with pytest.raises(RuntimeError, match="classes must be unique canonical strings"):
+    with pytest.raises(RuntimeError, match="source-import request classes"):
         handle_import_command(args)
 
 
@@ -511,10 +638,39 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
     project_state.mkdir(parents=True)
     idempotency_key = "5d74e1c1-f1e4-4b4b-9b42-cae872f71c4a"
     state_path = project_state / f"{idempotency_key}.json"
+    session_payload = {
+        "idempotency_key": idempotency_key,
+        "format": "yolo",
+        "root_name": "dataset",
+        "task_key": "detect",
+        "classes": ["aircraft"],
+        "file_count": 1,
+        "total_bytes": 1,
+    }
+    manifest_ref = {
+        "id": "dm_imp_done",
+        "format": "yolo",
+        "item_count": 1,
+        "byte_count": 1,
+        "storage": {
+            "kind": "minio",
+            "manifest_path": ("project_assets/ws_123/scope_123/imports/imp_done/manifest.json"),
+            "path_prefix": "project_assets/ws_123/scope_123/imports/imp_done",
+            "lakefs_repo": None,
+            "lakefs_commit": None,
+            "dataset_version_id": None,
+        },
+    }
+    read_lease = {
+        "id": "lease_imp_done",
+        "scope": "read",
+        "access": "object_ref",
+        "dataset_manifest_ref_id": "dm_imp_done",
+    }
     state_path.write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "api": "http://127.0.0.1:8080/api/v1",
                 "phase": "completed",
                 "project_id": "proj_123456789abc",
@@ -523,22 +679,25 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                 "source": str(source.resolve()),
                 "format": "yolo",
                 "task_key": "detect",
-                "session_payload": {
-                    "idempotency_key": idempotency_key,
-                    "format": "yolo",
-                    "root_name": "dataset",
-                    "task_key": "detect",
-                    "classes": ["aircraft"],
-                    "file_count": 1,
-                    "total_bytes": 1,
+                "session_payload": session_payload,
+                "session_response": {
+                    "workspace_id": "ws_123",
+                    "project_id": "proj_123456789abc",
+                    "import_id": "imp_done",
+                    "status": "pending_upload",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/imp_done/manifest.json"
+                    ),
+                    "dataset_manifest_ref": manifest_ref,
+                    "read_lease": read_lease,
                 },
                 "complete_response": {
                     "workspace_id": "ws_123",
                     "project_id": "proj_123456789abc",
                     "import_id": "imp_done",
                     "status": "queued",
-                    "dataset_manifest_ref": {"id": "dm_123"},
-                    "read_lease": {"id": "lease_123"},
+                    "dataset_manifest_ref": manifest_ref,
+                    "read_lease": read_lease,
                     "reason": "queued",
                     "dispatch_mode": "celery",
                     "worker_task_id": "task_123",

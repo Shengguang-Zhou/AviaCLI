@@ -82,6 +82,24 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 - API bases, server response fields, import identifiers, remote object identities, and import
   statuses have one canonical contract. Reject unknown fields, duplicate/missing signed entries,
   mismatches, redirects, and historical status aliases.
+- Dataset-session and completion responses decode one exact nested `dataset_manifest_ref` plus
+  `read_lease` model. Ref id, format, counts, canonical `project_assets/{workspace_id}/...`
+  owner, MinIO manifest path/import prefix, outer object key, lease id, and lease target are bound
+  to the same request and import. The exact dataset-session response is durable resume-state
+  identity, and completion must reproduce its workspace, manifest ref, object key, and lease;
+  object-key components must be NFC, exactly trimmed, and free of every Unicode `Cc`; loose,
+  foreign, malformed, or cross-phase replacement objects are contract failures.
+- Class catalogs use one validator across source imports, every dataset-format validation result,
+  YOLO metadata/declared classes, folder upload, and resume state. Every name is non-empty,
+  NFC-normalized, exactly trimmed, free of every Unicode `Cc` control (including DEL and C1), and unique.
+  A name is at most 200 Unicode code points, a catalog contains at most 10,000 classes, and every
+  canonical class id is in `0..9999`; these limits are identical across CLI, control plane,
+  Training manifests, and Vision label-space refs.
+  Callers never normalize or silently drop bad names, and invalid derived catalogs fail before
+  API resolution or authentication. Indexed catalogs accept only a real non-negative integer or
+  the canonical decimal string `0|[1-9][0-9]*`, require unique contiguous zero-based indices, and
+  reject booleans, floats, signs, padding, and leading zeroes. YOLO `nc` is an exact positive
+  integer and must equal the catalog length; quoted or otherwise coercible counts are invalid.
 - `POST /projects/{project_id}/imports/{import_id}/complete` has one
   `avia.import-complete-queued/v1` response. A retry after response loss must decode the exact same
   persisted queued receipt, including non-empty `dispatch_mode` and `worker_task_id`; the client
@@ -117,18 +135,25 @@ uv build --package avia-cli
 ```
 
 The internal Woodpecker PR/manual workflow is the quality-gate source of truth. Under Woodpecker
-3.14's local backend, `woodpeckerci/plugin-git:2.9.2` is a clone plugin identifier, not an OCI
+3.17's local backend, `woodpeckerci/plugin-git:2.9.2` is a clone plugin identifier, not an OCI
 image pin, while every ordinary step `image` is a host executable and must be absolute
-`/usr/bin/bash`. The first `host-toolchain` step verifies the bootstrap-owned Bash and plugin-git
-versions, `root:root 755` identities, and SHA256 values. Matrix combinations are separate
+`/usr/bin/bash`. The first `host-toolchain` step hashes and executes the sole root-installed
+`/usr/local/bin/avia-verify-woodpecker-local-toolchain` contract at SHA-256
+`17b2610d5658a41bd5d60d6c1f865506ea68b7064fe1d0f39baabdaae7196b58`; it verifies the root
+policy broker's exact pipeline/repository/event/commit/approval identity plus the complete host
+toolchain. Do not duplicate a partial Bash/plugin-git verifier in this repository. Matrix
+combinations are separate
 workflows; inside each workflow, `host-toolchain -> quality -> package` is an explicit DAG so no
 two steps mutate the same workspace `.venv`. Keep the clone entry free of explicit environment
-variables: only that clone boundary may receive Woodpecker-injected `CI_NETRC_*`; every ordinary
-step must reject any non-empty `CI_NETRC_*` without printing its value. The server supplies a
+variables: only that clone boundary may receive Woodpecker-injected `CI_NETRC_*`; the sole host
+verifier dynamically rejects any non-empty `CI_NETRC_*` before repository code and prints only
+the variable name. The server supplies a
 GitHub-URL-scoped `GIT_CONFIG_*` proxy to `127.0.0.1:7897`, which does not proxy ordinary HTTP
 clients. Native clone disables LFS and partial clone so checkout/reset cannot open a second
 promisor-network fetch. Never restore `skip_clone` or a custom checkout script. Tracked sources must not be Git
-LFS pointer files. All repositories share `UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this
+LFS pointer files. Every step uses the same bootstrap-owned canonical PATH beginning with the
+root-owned Node toolchain and system command directories. All repositories share
+`UV_CACHE_DIR=/mnt/data/avia/cache/uv`, and this
 same-device workspace must use `UV_LINK_MODE=hardlink`, never copy mode. The runner pre-provisions
 all supported interpreters and the workflow sets `UV_PYTHON_DOWNLOADS=never`; CI must never fetch
 a Python runtime implicitly. Compile-time warnings and pytest warnings owned by `avia_cli` or this
@@ -136,3 +161,9 @@ repository's tests fail the gate; third-party warnings remain visible and are ne
 promoted by a global `-W error`. GitHub Actions is release-only for tags/manual trusted publishing
 and runs the same frozen gates. Do not add hosted PR/main CI, server/GPU dependencies, or
 deployment behavior to this public client repository.
+
+The local backend is not a workload sandbox: the shared agent retains Docker authority, so an
+approved malicious workflow could bypass repository-side commands. Human approval of the exact
+commit is the security boundary; the root broker and verifier are fail-closed drift evidence, not
+a replacement sandbox. Release acceptance must separately prove that the open PR head and the
+Codex review refer to the same commit as the accepted Woodpecker pipeline.

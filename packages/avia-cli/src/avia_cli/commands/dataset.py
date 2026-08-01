@@ -30,7 +30,7 @@ def handle_dataset_command(args) -> int:
             hash_workers=int(args.hash_workers),
         )
         _print_inspect_result(result, json_output=bool(args.json))
-        return 0
+        return 0 if str(result.get("status")) == "ok" else 1
     if args.dataset_command == "verify":
         result = verify_dataset(
             source=args.source,

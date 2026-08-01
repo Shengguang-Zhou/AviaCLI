@@ -17,28 +17,24 @@ matrix:
 steps:
   host-toolchain:
     image: /usr/bin/bash
+    environment:
+      PATH: /opt/avia/toolchains/node-v22.12.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin
     commands:
-      - /usr/bin/bash scripts/ci/assert_no_ci_netrc.sh
-      - test "$(command -v bash)" = /usr/bin/bash
-      - test "$(env LC_ALL=C /usr/bin/bash --version | head -n 1 | cut -d ' ' -f 4)" = '5.2.21(1)-release'
-      - test "$(stat -c '%U:%G %a' /usr/bin/bash)" = 'root:root 755'
-      - test "$(sha256sum /usr/bin/bash | cut -d ' ' -f 1)" = bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1
-      - test "$(command -v plugin-git)" = /usr/local/bin/plugin-git
-      - test "$(env LC_ALL=C /usr/local/bin/plugin-git --version | sed -n 's/^git plugin version //p')" = 2.9.2
-      - test "$(stat -c '%U:%G %a' /usr/local/bin/plugin-git)" = 'root:root 755'
-      - test "$(sha256sum /usr/local/bin/plugin-git | cut -d ' ' -f 1)" = d7a194a93af7b7b4d2d632b9aef875a7a815cf8baa2ead32324d857d584be9f2
+      - |
+        printf '%s  %s\n' 17b2610d5658a41bd5d60d6c1f865506ea68b7064fe1d0f39baabdaae7196b58 /usr/local/bin/avia-verify-woodpecker-local-toolchain \
+          | sha256sum --check --strict -
+        /usr/bin/bash --noprofile --norc /usr/local/bin/avia-verify-woodpecker-local-toolchain
 
   quality:
     image: /usr/bin/bash
     depends_on: [host-toolchain]
     environment:
-      PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PATH: /opt/avia/toolchains/node-v22.12.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin
       UV_CACHE_DIR: /mnt/data/avia/cache/uv
       UV_LINK_MODE: hardlink
       UV_PYTHON_INSTALL_DIR: /mnt/data/avia/python
       UV_PYTHON_DOWNLOADS: never
     commands:
-      - /usr/bin/bash scripts/ci/assert_no_ci_netrc.sh
       - uv sync --python ${PYTHON_VERSION} --frozen --all-packages --group dev
       - uv run --python ${PYTHON_VERSION} ruff check packages tests
       - uv run --python ${PYTHON_VERSION} ruff format --check packages tests
@@ -49,7 +45,7 @@ steps:
     image: /usr/bin/bash
     depends_on: [quality]
     environment:
-      PATH: /home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      PATH: /opt/avia/toolchains/node-v22.12.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/dbcloud/.local/bin:/mnt/data/avia/wheelhouse/bin
       UV_CACHE_DIR: /mnt/data/avia/cache/uv
       UV_LINK_MODE: hardlink
       UV_PYTHON_INSTALL_DIR: /mnt/data/avia/python
@@ -58,7 +54,6 @@ steps:
       - matrix:
           PYTHON_VERSION: "3.12"
     commands:
-      - /usr/bin/bash scripts/ci/assert_no_ci_netrc.sh
       - |
         build_dir="$(mktemp -d /tmp/avia-cli-dist.XXXXXX)"
         trap 'rm -rf "$${build_dir}"' EXIT

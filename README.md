@@ -46,12 +46,18 @@ The internal runner uses system Python 3.10/3.12 plus the managed-interpreter ro
 `/mnt/data/avia/python` for Python 3.11. CI sets both that root and `UV_PYTHON_DOWNLOADS=never`, so
 a missing runtime is an observable runner error rather than an implicit network download.
 
-Pull requests and manual internal runs use `.woodpecker/ci.yml` on Woodpecker 3.14's local backend.
+Pull requests and manual internal runs use `.woodpecker/ci.yml` on Woodpecker 3.17's local backend.
 The clone image is a plugin identifier, while ordinary step images are exact host executables.
-The workflow verifies its host Bash/plugin-git toolchain, rejects clone-only NETRC credentials in
-every ordinary step, and uses an explicit serial DAG inside each matrix workflow. It runs frozen
-dependency sync, owned-code warning gates, and Ruff lint/format checks on Python 3.10, 3.11, and
-3.12, then builds the sdist and wheel once on Python 3.12. Third-party warnings remain visible.
+The first lane hashes and executes the sole root-installed policy verifier, which binds the exact
+repository/event/commit/approval, local agent, proxy, and complete host toolchain. Ordinary steps
+reject clone-only NETRC credentials and use an explicit serial DAG inside each matrix workflow.
+The workflow runs frozen dependency sync, owned-code warning gates, and Ruff lint/format checks on
+Python 3.10, 3.11, and 3.12, then builds the sdist and wheel once on Python 3.12. Third-party
+warnings remain visible.
+
+The local backend is not a sandbox because the shared agent retains Docker authority. Exact-commit
+human approval is therefore the security boundary; the root verifier is a fail-closed drift gate,
+and release acceptance separately matches the PR head, Codex review, and accepted pipeline SHA.
 
 ## Boundary
 
@@ -68,8 +74,9 @@ no historical truncation flags. Resume rejects a changed file set or file identi
 every file already recorded as uploaded before issuing any network request.
 Validated files remain bound to one `O_NOFOLLOW` descriptor identity through hashing and every
 retry. API-issued presigned URLs are used unchanged; there is no origin rewrite, Host override,
-or silent transport fallback. PUT retries are limited to typed transport failures and HTTP
-408/429/5xx responses; invalid URLs, headers, ranges, and other contract errors fail immediately.
+or silent transport fallback. PUT retries are limited to typed transport failures and exactly
+HTTP 408/429/500/502/503/504 responses; invalid URLs, headers, ranges, and other contract errors
+fail immediately.
 Folder sessions are the sole dataset-byte upload path; the historical non-idempotent archive
 command was removed. API bases, server responses, remote identities, and statuses are decoded
 against one canonical contract. Transport concurrency is tuned from the validated storage URL,
@@ -107,8 +114,10 @@ With the local backend, `woodpeckerci/plugin-git:2.9.2` identifies the host `plu
 binary; it is not an OCI image pin. The clone disables LFS and partial clone. Its complete shallow
 fetch makes checkout and reset local, so a successfully fetched commit cannot later fail on a
 second promisor-remote TLS request. This clone is the only boundary that may receive Woodpecker
-NETRC variables. Ordinary steps run absolute `/usr/bin/bash`, fail on any non-empty `CI_NETRC_*`,
-and use the shared `/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
+NETRC variables. Before repository-owned quality commands, the root policy verifier proves the
+live pipeline approval and toolchain identity through its root broker. Ordinary steps run absolute
+`/usr/bin/bash`, fail on any non-empty `CI_NETRC_*`, and use the shared
+`/mnt/data/avia/cache/uv`, `UV_LINK_MODE=hardlink`, and
 `UV_PYTHON_DOWNLOADS=never`. The server-owned GitHub URL proxy is carried through `GIT_CONFIG_*`.
 The workflow has no custom checkout path and the source-boundary gate rejects tracked Git LFS
 pointer files.

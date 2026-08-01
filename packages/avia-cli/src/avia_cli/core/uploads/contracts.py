@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unicodedata
 
+from avia_cli.core.uploads.class_catalog import require_canonical_class_catalog
+
 FORMAT_TASKS: dict[str, frozenset[str]] = {
     "yolo": frozenset({"detect", "classify", "segment", "pose", "obb"}),
     "coco": frozenset({"detect", "segment", "pose"}),
@@ -9,6 +11,44 @@ FORMAT_TASKS: dict[str, frozenset[str]] = {
     "anomalib": frozenset({"ad"}),
 }
 ANOMALIB_CLASSES = ("good", "bad")
+SUPPORTED_FORMATS = tuple(FORMAT_TASKS)
+SUPPORTED_TASK_KEYS = ("detect", "classify", "segment", "pose", "obb", "ad")
+
+
+def require_object_prefix_class_catalog(
+    value: object,
+    *,
+    format_name: str,
+    label: str,
+) -> list[str]:
+    classes = require_canonical_class_catalog(
+        value,
+        label=label,
+        allow_empty=True,
+    )
+    if format_name == "anomalib":
+        if classes != list(ANOMALIB_CLASSES):
+            raise ValueError(f"{label} must be exactly ['good', 'bad'] for anomalib")
+    elif format_name in {"coco", "imagenet"}:
+        if classes:
+            raise ValueError(f"{label} must be empty for {format_name}")
+    elif format_name != "yolo":
+        raise ValueError(f"{label} format is unsupported: {format_name}")
+    return classes
+
+
+def require_folder_class_catalog(
+    value: object,
+    *,
+    format_name: str,
+    label: str,
+) -> list[str]:
+    classes = require_canonical_class_catalog(value, label=label)
+    if format_name == "anomalib" and classes != list(ANOMALIB_CLASSES):
+        raise ValueError(f"{label} must be exactly ['good', 'bad'] for anomalib")
+    if format_name not in FORMAT_TASKS:
+        raise ValueError(f"{label} format is unsupported: {format_name}")
+    return classes
 
 
 def require_format_task(*, format_name: str, task_key: str) -> tuple[str, str]:

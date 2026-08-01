@@ -162,7 +162,11 @@ def _create_dataset_session(
         retries=3,
         label="dataset-session",
     )
-    return decode_dataset_session_response(response, project_id=project_id)
+    return decode_dataset_session_response(
+        response,
+        project_id=project_id,
+        request_payload=payload,
+    )
 
 
 def _batch_upload_urls(
@@ -312,7 +316,15 @@ def _put_file_with_retries(
     )
 
 
-def _complete_import(*, api: str, token: str, project_id: str, import_id: str) -> dict[str, Any]:
+def _complete_import(
+    *,
+    api: str,
+    token: str,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
+) -> dict[str, Any]:
     response = _request_json_with_retries(
         method="POST",
         url=_project_path(api, project_id, f"imports/{parse.quote(import_id, safe='')}/complete"),
@@ -322,7 +334,13 @@ def _complete_import(*, api: str, token: str, project_id: str, import_id: str) -
         retries=3,
         label="complete-import",
     )
-    return decode_complete_import_response(response, project_id=project_id, import_id=import_id)
+    return decode_complete_import_response(
+        response,
+        project_id=project_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        session_response=session_response,
+    )
 
 
 def _poll_import(

@@ -9,6 +9,15 @@ import yaml
 from PIL import Image
 from pycocotools import mask as mask_utils
 
+from avia_cli.core.uploads.class_catalog import (
+    MAX_CLASS_CATALOG_SIZE,
+    MAX_CLASS_ID,
+    MAX_CLASS_NAME_CODEPOINTS,
+    require_canonical_class_catalog,
+    require_canonical_class_index,
+    require_class_count,
+    require_indexed_class_catalog,
+)
 from avia_cli.core.uploads.inspect import inspect_dataset, verify_dataset
 from avia_cli.core.uploads.manifest import scan_source_manifest
 from avia_cli.core.uploads.validation import require_valid_dataset
@@ -246,7 +255,16 @@ def test_verify_yolo_rejects_missing_class_names(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "names",
-    [["aircraft", ""], ["aircraft", "aircraft"], [" aircraft"], [1]],
+    [
+        ["aircraft", ""],
+        ["aircraft", "aircraft"],
+        [" aircraft"],
+        ["air\tcraft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+        ["e\u0301"],
+        [1],
+    ],
 )
 def test_verify_yolo_rejects_ambiguous_class_names(tmp_path: Path, names: list[object]) -> None:
     _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
@@ -256,16 +274,177 @@ def test_verify_yolo_rejects_ambiguous_class_names(tmp_path: Path, names: list[o
         _verify_yolo(tmp_path, "detect")
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        {0: "aircraft", "0": "helicopter"},
+        {0: "aircraft", "0": 7},
+    ],
+)
+def test_verify_yolo_rejects_mapping_ids_that_collide_after_integer_coercion(
+    tmp_path: Path,
+    names: dict[object, object],
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").write_text(yaml.safe_dump({"names": names}), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="class ids must be unique"):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize(
+    "raw_index",
+    [True, False, 0.0, 1.9, " 0", "0 ", "+0", "00", "01", "-0"],
+)
+def test_class_catalog_rejects_noncanonical_indices(raw_index: object) -> None:
+    with pytest.raises(ValueError):
+        require_indexed_class_catalog(
+            {raw_index: "aircraft"},
+            label="names",
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "names: {+0: aircraft}\n",
+        "names: {00: aircraft}\n",
+        "names: {0.0: aircraft}\n",
+        "names: {false: aircraft}\n",
+        "names: {' 0': aircraft}\n",
+        "names: {'0 ': aircraft}\n",
+    ],
+)
+def test_verify_yolo_rejects_lexically_noncanonical_indices(
+    tmp_path: Path,
+    metadata: str,
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").write_text(metadata, encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize("nc", [True, 1.0, "1", "+1", " 1", "01"])
+def test_class_count_rejects_non_integer_runtime_values(nc: object) -> None:
+    with pytest.raises(ValueError):
+        require_class_count(nc, label="nc", allow_zero=False)
+
+
+def test_class_catalog_accepts_exact_global_limits() -> None:
+    classes = [f"class-{index}" for index in range(MAX_CLASS_CATALOG_SIZE - 1)]
+    classes.append("\U0001f6e9" * MAX_CLASS_NAME_CODEPOINTS)
+
+    assert require_canonical_class_catalog(classes, label="classes") == classes
+    assert require_canonical_class_index(MAX_CLASS_ID, label="class_id") == MAX_CLASS_ID
+    assert (
+        require_class_count(
+            MAX_CLASS_CATALOG_SIZE,
+            label="nc",
+            allow_zero=False,
+        )
+        == MAX_CLASS_CATALOG_SIZE
+    )
+
+
+def test_class_catalog_rejects_values_beyond_global_limits() -> None:
+    with pytest.raises(ValueError, match="at most 200 Unicode code points"):
+        require_canonical_class_catalog(
+            ["\U0001f6e9" * (MAX_CLASS_NAME_CODEPOINTS + 1)],
+            label="classes",
+        )
+    with pytest.raises(ValueError, match="at most 10000 classes"):
+        require_canonical_class_catalog(
+            [f"class-{index}" for index in range(MAX_CLASS_CATALOG_SIZE + 1)],
+            label="classes",
+        )
+    with pytest.raises(ValueError, match="between 0 and 9999"):
+        require_canonical_class_index(MAX_CLASS_ID + 1, label="class_id")
+    with pytest.raises(ValueError, match="at most 10000"):
+        require_class_count(
+            MAX_CLASS_CATALOG_SIZE + 1,
+            label="nc",
+            allow_zero=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "names: [aircraft]\nnc: true\n",
+        "names: [aircraft]\nnc: 1.0\n",
+        "names: [aircraft]\nnc: '1'\n",
+        "names: [aircraft]\nnc: +1\n",
+        "names: [aircraft]\nnc: 01\n",
+    ],
+)
+def test_verify_yolo_rejects_noncanonical_nc(
+    tmp_path: Path,
+    metadata: str,
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").write_text(metadata, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="invalid YOLO nc"):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [
+        [" aircraft"],
+        ["aircraft "],
+        [""],
+        ["aircraft", "aircraft"],
+        [7],
+        ["e\u0301"],
+        ["air\x00craft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+    ],
+)
+def test_class_catalog_rejects_noncanonical_names(catalog: list[object]) -> None:
+    with pytest.raises(ValueError):
+        require_canonical_class_catalog(catalog, label="classes")
+
+
 def test_verify_yolo_rejects_noncanonical_classes_txt(tmp_path: Path) -> None:
     _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
     (tmp_path / "data.yaml").unlink()
     (tmp_path / "classes.txt").write_text("aircraft\n\nhelicopter \n", encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="canonical non-empty"):
+    with pytest.raises(SystemExit, match="YOLO names"):
         _verify_yolo(tmp_path, "detect")
 
 
-@pytest.mark.parametrize("declared_classes", [[""], ["aircraft", "aircraft"]])
+@pytest.mark.parametrize(
+    "class_name",
+    ["air\tcraft", "air\x7fcraft", "air\u0085craft", "e\u0301"],
+)
+def test_verify_yolo_classes_txt_rejects_controls_and_non_nfc(
+    tmp_path: Path,
+    class_name: str,
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").unlink()
+    (tmp_path / "classes.txt").write_text(f"{class_name}\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="YOLO names"):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize(
+    "declared_classes",
+    [
+        [""],
+        ["aircraft", "aircraft"],
+        ["air\tcraft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+        ["e\u0301"],
+    ],
+)
 def test_upload_validation_rejects_invalid_declared_class_names(
     tmp_path: Path, declared_classes: list[str]
 ) -> None:

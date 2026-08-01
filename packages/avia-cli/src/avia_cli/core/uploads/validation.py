@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from avia_cli.core.uploads.class_catalog import require_canonical_class_catalog
 from avia_cli.core.uploads.inventory import require_manifest_inventory
 from avia_cli.core.uploads.validation_coco import validate_coco
+from avia_cli.core.uploads.validation_common import error
 from avia_cli.core.uploads.validation_folders import validate_anomalib, validate_imagenet
 from avia_cli.core.uploads.validation_yolo import validate_yolo
 
@@ -20,27 +22,38 @@ def validate_dataset(
 ) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
     inventory = require_manifest_inventory(manifest, format_name=format_name)
     if format_name == "yolo":
-        return validate_yolo(
+        classes, errors, warnings = validate_yolo(
             source_root=source_root,
             manifest=manifest,
             inventory=inventory,
             task_key=task_key,
             declared_classes=declared_classes,
         )
-    if format_name == "coco":
+    elif format_name == "coco":
         classes, errors = validate_coco(
             source_root=source_root,
             inventory=inventory,
             task_key=task_key,
         )
-        return classes, errors, []
-    if format_name == "imagenet":
+        warnings = []
+    elif format_name == "imagenet":
         classes, errors = validate_imagenet(source_root, inventory=inventory)
-        return classes, errors, []
-    if format_name == "anomalib":
+        warnings = []
+    elif format_name == "anomalib":
         classes, errors = validate_anomalib(source_root, inventory=inventory)
-        return classes, errors, []
-    raise AssertionError(f"unreachable dataset format: {format_name}")
+        warnings = []
+    else:
+        raise AssertionError(f"unreachable dataset format: {format_name}")
+    try:
+        classes = require_canonical_class_catalog(
+            classes,
+            label=f"{format_name} class catalog",
+            allow_empty=bool(errors),
+        )
+    except ValueError as exc:
+        errors.append(error("invalid_class_catalog", str(exc)))
+        classes = []
+    return classes, errors, warnings
 
 
 def require_valid_dataset(

@@ -4,8 +4,8 @@ import argparse
 import math
 import os
 
-_SUPPORTED_FORMATS = ("yolo", "coco", "imagenet", "anomalib")
-_SUPPORTED_TASK_KEYS = ("detect", "classify", "segment", "pose", "obb", "ad")
+from avia_cli.core.uploads.contracts import SUPPORTED_FORMATS, SUPPORTED_TASK_KEYS
+
 _MAX_FOLDER_BATCH_SIZE = 1000
 DEFAULT_STREAMING_BATCH_HTTP_TIMEOUT_SECONDS = 180.0
 _DEFAULT_UPLOAD_READ_TIMEOUT = 45.0
@@ -42,13 +42,13 @@ def _add_dataset_contract_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--format",
         required=True,
-        choices=_SUPPORTED_FORMATS,
+        choices=SUPPORTED_FORMATS,
         help="Dataset serialization format; never inferred.",
     )
     parser.add_argument(
         "--task-key",
         required=True,
-        choices=_SUPPORTED_TASK_KEYS,
+        choices=SUPPORTED_TASK_KEYS,
         help=(
             "Exact matrix: yolo=detect,classify,segment,pose,obb; "
             "coco=detect,segment,pose; imagenet=classify; anomalib=ad."
@@ -78,10 +78,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     import_parser = sub.add_parser("import")
     import_sub = import_parser.add_subparsers(dest="import_command", required=True)
-
-    scan_parser = import_sub.add_parser("scan")
-    scan_parser.add_argument("--source", required=True)
-    _add_dataset_contract_arguments(scan_parser)
 
     create_parser = import_sub.add_parser("create")
     create_parser.add_argument("--api", default=None)

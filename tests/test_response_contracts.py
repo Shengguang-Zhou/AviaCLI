@@ -10,7 +10,6 @@ from avia_cli.context import api_from_args
 from avia_cli.core.api_base import canonical_api_base
 from avia_cli.core.uploads.api import _complete_dataset_file_batch
 from avia_cli.core.uploads.dataset import create_source_import
-from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.response_contracts import (
     IMPORT_STATUSES,
     decode_batch_complete_response,
@@ -29,10 +28,87 @@ _IMPORT_COMPLETE_CONTRACT = json.loads(
 )
 
 
-def _ref_payload() -> tuple[dict[str, object], dict[str, object]]:
-    ref = {"id": "dm_123", "storage": {"kind": "minio", "manifest_path": "m.json"}}
-    lease = {"id": "lease_123", "dataset_manifest_ref_id": "dm_123"}
+def _session_request_payload(
+    *,
+    format_name: str = "yolo",
+    task_key: str = "detect",
+    file_count: int = 3,
+    total_bytes: int = 123,
+) -> dict[str, object]:
+    return {
+        "idempotency_key": "5d74e1c1-f1e4-4b4b-9b42-cae872f71c4a",
+        "format": format_name,
+        "root_name": "dataset",
+        "task_key": task_key,
+        "classes": ["person"],
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+    }
+
+
+def _ref_payload(
+    *,
+    import_id: str = IMPORT_ID,
+    object_key: str | None = None,
+    format_name: str = "yolo",
+    item_count: int = 3,
+    byte_count: int = 123,
+) -> tuple[dict[str, object], dict[str, object]]:
+    manifest_path = (
+        object_key or f"project_assets/ws_123/scope_123/imports/{import_id}/manifest.json"
+    )
+    ref_id = f"dm_{import_id}"
+    ref = {
+        "id": ref_id,
+        "format": format_name,
+        "item_count": item_count,
+        "byte_count": byte_count,
+        "storage": {
+            "kind": "minio",
+            "manifest_path": manifest_path,
+            "path_prefix": manifest_path.rsplit("/", 1)[0],
+            "lakefs_repo": None,
+            "lakefs_commit": None,
+            "dataset_version_id": None,
+        },
+    }
+    lease = {
+        "id": f"lease_{import_id}",
+        "scope": "read",
+        "access": "object_ref",
+        "dataset_manifest_ref_id": ref_id,
+    }
     return ref, lease
+
+
+def _session_response(
+    *,
+    project_id: str = PROJECT_ID,
+    import_id: str = IMPORT_ID,
+    workspace_id: str = "ws_123",
+    request_payload: dict[str, object] | None = None,
+    object_key: str | None = None,
+) -> dict[str, object]:
+    request = request_payload or _session_request_payload()
+    manifest_path = (
+        object_key or f"project_assets/{workspace_id}/scope_123/imports/{import_id}/manifest.json"
+    )
+    ref, lease = _ref_payload(
+        import_id=import_id,
+        object_key=manifest_path,
+        format_name=str(request["format"]),
+        item_count=int(request["file_count"]),
+        byte_count=int(request["total_bytes"]),
+    )
+    return {
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "import_id": import_id,
+        "status": "pending_upload",
+        "object_key": manifest_path,
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+    }
 
 
 def _source_import_contract(
@@ -51,7 +127,7 @@ def _source_import_contract(
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
         "status": "queued" if auto_post_processing else "uploaded",
-        "object_key": "workspaces/ws_123/imports/imp_123/manifest.json",
+        "object_key": "project_assets/ws_123/scope_123/imports/imp_123/manifest.json",
         "progress": {
             "source_kind": "object_prefix",
             "source_uri": "datasets/coco8/",
@@ -63,7 +139,9 @@ def _source_import_contract(
             "uploaded": 3,
             "image_count": 0,
             "streamed": 0,
-            "manifest_object_key": "workspaces/ws_123/imports/imp_123/manifest.json",
+            "manifest_object_key": (
+                "project_assets/ws_123/scope_123/imports/imp_123/manifest.json"
+            ),
             "source_version_id": "version-123",
             "source_bucket": "datasets",
             "source_etag": "etag-123",
@@ -86,7 +164,7 @@ def test_source_import_rejects_class_override_for_imagenet() -> None:
     request_payload, _response = _source_import_contract(auto_post_processing=False)
     request_payload.update({"format": "imagenet", "task_key": "classify"})
 
-    with pytest.raises(RuntimeError, match=r"coco and imagenet.*classes must be empty"):
+    with pytest.raises(RuntimeError, match=r"classes must be empty for imagenet"):
         validate_source_import_request(request_payload)
 
 
@@ -104,6 +182,48 @@ def test_source_import_requires_exact_anomalib_binary_taxonomy() -> None:
     for invalid in ([], ["bad", "good"], ["good"], ["good", "bad", "other"]):
         with pytest.raises(RuntimeError, match="exactly"):
             validate_source_import_request({**request_payload, "classes": invalid})
+
+
+@pytest.mark.parametrize(
+    ("format_name", "task_key", "classes"),
+    [
+        ("yolo", "detect", []),
+        ("yolo", "obb", ["aircraft"]),
+        ("coco", "segment", []),
+        ("imagenet", "classify", []),
+        ("anomalib", "ad", ["good", "bad"]),
+    ],
+)
+def test_source_import_uses_one_exact_object_prefix_class_matrix(
+    format_name: str,
+    task_key: str,
+    classes: list[str],
+) -> None:
+    request_payload, _response = _source_import_contract(auto_post_processing=False)
+    request_payload.update({"format": format_name, "task_key": task_key, "classes": classes})
+
+    validate_source_import_request(request_payload)
+
+
+@pytest.mark.parametrize(
+    ("format_name", "task_key", "classes"),
+    [
+        ("coco", "detect", ["person"]),
+        ("imagenet", "classify", ["aircraft"]),
+        ("anomalib", "ad", []),
+        ("anomalib", "ad", ["bad", "good"]),
+    ],
+)
+def test_source_import_rejects_noncanonical_object_prefix_class_matrix(
+    format_name: str,
+    task_key: str,
+    classes: list[str],
+) -> None:
+    request_payload, _response = _source_import_contract(auto_post_processing=False)
+    request_payload.update({"format": format_name, "task_key": task_key, "classes": classes})
+
+    with pytest.raises(RuntimeError):
+        validate_source_import_request(request_payload)
 
 
 @pytest.mark.parametrize(
@@ -229,19 +349,113 @@ def test_api_from_args_does_not_silently_trim_environment_whitespace(
 
 def test_dataset_session_decoder_accepts_only_exact_backend_contract() -> None:
     ref, lease = _ref_payload()
+    object_key = "project_assets/ws_123/scope_123/imports/imp_123/manifest.json"
     payload = {
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
         "status": "pending_upload",
-        "object_key": "workspace/imports/manifest.json",
+        "object_key": object_key,
         "dataset_manifest_ref": ref,
         "read_lease": lease,
     }
 
-    assert decode_dataset_session_response(payload, project_id=PROJECT_ID) is payload
+    assert (
+        decode_dataset_session_response(
+            payload,
+            project_id=PROJECT_ID,
+            request_payload=_session_request_payload(),
+        )
+        is payload
+    )
     with pytest.raises(RuntimeError, match="fields must be exact"):
-        decode_dataset_session_response({**payload, "legacy_id": "x"}, project_id=PROJECT_ID)
+        decode_dataset_session_response(
+            {**payload, "legacy_id": "x"},
+            project_id=PROJECT_ID,
+            request_payload=_session_request_payload(),
+        )
+
+
+def test_dataset_session_rejects_malformed_or_foreign_manifest_identities() -> None:
+    ref, lease = _ref_payload()
+    foreign_workspace_ref, _foreign_workspace_lease = _ref_payload(
+        object_key=("project_assets/ws_foreign/scope_123/imports/imp_123/manifest.json")
+    )
+    payload = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": "pending_upload",
+        "object_key": "project_assets/ws_123/scope_123/imports/imp_123/manifest.json",
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+    }
+    storage = dict(ref["storage"])
+    malformed_payloads = [
+        {**payload, "dataset_manifest_ref": {**ref, "legacy": True}},
+        {**payload, "dataset_manifest_ref": {**ref, "id": "dm_imp_foreign"}},
+        {
+            **payload,
+            "dataset_manifest_ref": {
+                **ref,
+                "storage": {
+                    **storage,
+                    "manifest_path": (
+                        "project_assets/ws_123/scope_123/imports/imp_foreign/manifest.json"
+                    ),
+                },
+            },
+        },
+        {
+            **payload,
+            "object_key": "project_assets/ws_123/scope_123/imports/imp_123/other.json",
+        },
+        {
+            **payload,
+            "read_lease": {**lease, "dataset_manifest_ref_id": "dm_imp_foreign"},
+        },
+        {**payload, "dataset_manifest_ref": {**ref, "item_count": 4}},
+        {
+            **payload,
+            "object_key": ("project_assets/ws_foreign/scope_123/imports/imp_123/manifest.json"),
+            "dataset_manifest_ref": foreign_workspace_ref,
+        },
+    ]
+
+    for malformed in malformed_payloads:
+        with pytest.raises(RuntimeError):
+            decode_dataset_session_response(
+                malformed,
+                project_id=PROJECT_ID,
+                request_payload=_session_request_payload(),
+            )
+
+
+@pytest.mark.parametrize(
+    "scope_segment",
+    ["scope\tbad", "scope\x7fbad", "scope\u0085bad", "e\u0301", "scope_123 "],
+)
+def test_dataset_session_rejects_noncanonical_manifest_key_components(
+    scope_segment: str,
+) -> None:
+    object_key = f"project_assets/ws_123/{scope_segment}/imports/imp_123/manifest.json"
+    ref, lease = _ref_payload(object_key=object_key)
+    payload = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": "pending_upload",
+        "object_key": object_key,
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+    }
+
+    with pytest.raises(RuntimeError, match="canonical bucket-local key"):
+        decode_dataset_session_response(
+            payload,
+            project_id=PROJECT_ID,
+            request_payload=_session_request_payload(),
+        )
 
 
 @pytest.mark.parametrize("auto_post_processing", [False, True])
@@ -541,7 +755,13 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "dispatch_mode": "celery",
         "worker_task_id": "task_123",
     }
-    assert decode_complete_import_response(complete, project_id=PROJECT_ID, import_id=IMPORT_ID)
+    assert decode_complete_import_response(
+        complete,
+        project_id=PROJECT_ID,
+        import_id=IMPORT_ID,
+        request_payload=_session_request_payload(),
+        session_response=_session_response(),
+    )
     job = {
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
@@ -559,6 +779,44 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
             decode_import_job_response(
                 {**job, "status": alias}, project_id=PROJECT_ID, import_id=IMPORT_ID
             )
+
+
+def test_complete_decoder_binds_the_persisted_session_workspace_and_manifest_key() -> None:
+    request_payload = _session_request_payload()
+    session_response = _session_response(request_payload=request_payload)
+    ref, lease = _ref_payload()
+    complete = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "status": "queued",
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+        "reason": "queued",
+        "dispatch_mode": "celery",
+        "worker_task_id": "task_123",
+    }
+    changed_ref, _changed_lease = _ref_payload(
+        object_key=("project_assets/ws_123/scope_123/imports/imp_123/replacement.json")
+    )
+
+    with pytest.raises(RuntimeError, match="object_key"):
+        decode_complete_import_response(
+            {**complete, "dataset_manifest_ref": changed_ref},
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            request_payload=request_payload,
+            session_response=session_response,
+        )
+
+    with pytest.raises(RuntimeError, match="workspace_id"):
+        decode_complete_import_response(
+            {**complete, "workspace_id": "ws_foreign"},
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            request_payload=request_payload,
+            session_response=session_response,
+        )
 
 
 @pytest.mark.parametrize(
@@ -590,7 +848,13 @@ def test_complete_import_rejects_prepublication_version_identity(
     }
 
     with pytest.raises(RuntimeError, match="fields must be exact"):
-        decode_complete_import_response(payload, project_id=PROJECT_ID, import_id=IMPORT_ID)
+        decode_complete_import_response(
+            payload,
+            project_id=PROJECT_ID,
+            import_id=IMPORT_ID,
+            request_payload=_session_request_payload(),
+            session_response=_session_response(),
+        )
 
 
 @pytest.mark.parametrize("status", sorted(IMPORT_STATUSES - {"succeeded"}))
@@ -678,6 +942,22 @@ def test_succeeded_import_job_rejects_conflicting_version_reference_identity() -
 def test_complete_decoder_accepts_the_shared_server_queued_contract() -> None:
     contract = _IMPORT_COMPLETE_CONTRACT
     payload = dict(contract["example"])
+    ref = payload["dataset_manifest_ref"]
+    assert isinstance(ref, dict)
+    request_payload = _session_request_payload(
+        format_name=str(ref["format"]),
+        file_count=int(ref["item_count"]),
+        total_bytes=int(ref["byte_count"]),
+    )
+    storage = ref["storage"]
+    assert isinstance(storage, dict)
+    session_response = _session_response(
+        project_id=str(payload["project_id"]),
+        import_id=str(payload["import_id"]),
+        workspace_id=str(payload["workspace_id"]),
+        request_payload=request_payload,
+        object_key=str(storage["manifest_path"]),
+    )
 
     assert set(payload) == set(contract["fields"])
     assert (
@@ -685,6 +965,8 @@ def test_complete_decoder_accepts_the_shared_server_queued_contract() -> None:
             payload,
             project_id=str(payload["project_id"]),
             import_id=str(payload["import_id"]),
+            request_payload=request_payload,
+            session_response=session_response,
         )
         is payload
     )
@@ -696,6 +978,8 @@ def test_complete_decoder_accepts_the_shared_server_queued_contract() -> None:
                 {**payload, field: ""},
                 project_id=str(payload["project_id"]),
                 import_id=str(payload["import_id"]),
+                request_payload=request_payload,
+                session_response=session_response,
             )
     for field in contract["object_fields"]:
         with pytest.raises(RuntimeError, match=field):
@@ -703,17 +987,9 @@ def test_complete_decoder_accepts_the_shared_server_queued_contract() -> None:
                 {**payload, field: {}},
                 project_id=str(payload["project_id"]),
                 import_id=str(payload["import_id"]),
+                request_payload=request_payload,
+                session_response=session_response,
             )
-
-
-def test_attach_upload_refs_rejects_conflicting_identity_instead_of_first_wins() -> None:
-    result = {
-        "complete": {"dataset_manifest_ref": {"id": "dm_first"}},
-        "job": {"dataset_manifest_ref": {"id": "dm_second"}},
-    }
-
-    with pytest.raises(RuntimeError, match="conflicting dataset_manifest_ref"):
-        attach_upload_refs(result)
 
 
 def test_concurrent_upload_error_is_machine_readable() -> None:

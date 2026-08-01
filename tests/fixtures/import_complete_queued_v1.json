@@ -32,10 +32,23 @@
     "import_id": "imp_contract",
     "status": "queued",
     "dataset_manifest_ref": {
-      "id": "dm_imp_contract"
+      "id": "dm_imp_contract",
+      "format": "yolo",
+      "item_count": 3,
+      "byte_count": 123,
+      "storage": {
+        "kind": "minio",
+        "manifest_path": "project_assets/ws_contract/scope_contract/imports/imp_contract/manifest.json",
+        "path_prefix": "project_assets/ws_contract/scope_contract/imports/imp_contract",
+        "lakefs_repo": null,
+        "lakefs_commit": null,
+        "dataset_version_id": null
+      }
     },
     "read_lease": {
       "id": "lease_imp_contract",
+      "scope": "read",
+      "access": "object_ref",
       "dataset_manifest_ref_id": "dm_imp_contract"
     },
     "reason": "queued",

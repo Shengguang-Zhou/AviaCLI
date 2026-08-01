@@ -123,10 +123,7 @@ def test_internal_pr_ci_uses_local_backend_shared_cache_and_runs_full_release_ga
     assert steps["host-toolchain"].get("depends_on") is None
     assert steps["quality"]["depends_on"] == ["host-toolchain"]
     assert steps["package"]["depends_on"] == ["quality"]
-    assert all(
-        step["commands"][0] == "/usr/bin/bash scripts/ci/assert_no_ci_netrc.sh"
-        for step in steps.values()
-    )
+    assert "assert_no_ci_netrc.sh" not in workflow_text
     assert workflow["matrix"] == {"PYTHON_VERSION": ["3.10", "3.11", "3.12"]}
     assert steps["package"]["when"] == [{"matrix": {"PYTHON_VERSION": "3.12"}}]
 
@@ -153,50 +150,26 @@ def test_internal_pr_ci_uses_local_backend_shared_cache_and_runs_full_release_ga
     assert "uv build --package avia-cli" in workflow_text
 
 
-def test_local_backend_host_toolchain_identity_is_exact_and_locale_stable() -> None:
-    workflow = (ROOT / ".woodpecker" / "ci.yml").read_text(encoding="utf-8")
+def test_local_backend_uses_the_single_root_policy_verifier() -> None:
+    workflow_text = (ROOT / ".woodpecker" / "ci.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    host = workflow["steps"]["host-toolchain"]
+    verifier = host["commands"]
 
-    expected_checks = (
-        'test "$(command -v bash)" = /usr/bin/bash',
-        'test "$(env LC_ALL=C /usr/bin/bash --version | head -n 1 | '
-        "cut -d ' ' -f 4)\" = '5.2.21(1)-release'",
-        "test \"$(stat -c '%U:%G %a' /usr/bin/bash)\" = 'root:root 755'",
-        "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
-        'test "$(command -v plugin-git)" = /usr/local/bin/plugin-git',
-        'test "$(env LC_ALL=C /usr/local/bin/plugin-git --version | '
-        "sed -n 's/^git plugin version //p')\" = 2.9.2",
-        "test \"$(stat -c '%U:%G %a' /usr/local/bin/plugin-git)\" = 'root:root 755'",
-        "d7a194a93af7b7b4d2d632b9aef875a7a815cf8baa2ead32324d857d584be9f2",
+    assert len(verifier) == 1
+    assert "17b2610d5658a41bd5d60d6c1f865506ea68b7064fe1d0f39baabdaae7196b58" in verifier[0]
+    assert "sha256sum --check --strict -" in verifier[0]
+    assert (
+        "/usr/bin/bash --noprofile --norc /usr/local/bin/avia-verify-woodpecker-local-toolchain"
+    ) in verifier[0]
+    assert "command -v bash" not in workflow_text
+    assert "command -v plugin-git" not in workflow_text
+    canonical_path = (
+        "/opt/avia/toolchains/node-v22.12.0/bin:/usr/local/sbin:/usr/local/bin:"
+        "/usr/sbin:/usr/bin:/sbin:/bin:/home/dbcloud/.local/bin:"
+        "/mnt/data/avia/wheelhouse/bin"
     )
-    for expected in expected_checks:
-        assert expected in workflow
-    assert "awk '" not in workflow
-
-
-def test_ordinary_ci_step_rejects_netrc_without_printing_credential_values() -> None:
-    guard = ROOT / "scripts" / "ci" / "assert_no_ci_netrc.sh"
-    environment = {
-        name: value for name, value in os.environ.items() if not name.startswith("CI_NETRC_")
-    }
-
-    accepted = subprocess.run(
-        ["/usr/bin/bash", str(guard)],
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    assert accepted.returncode == 0, accepted.stderr
-
-    secret = "credential-value-must-never-be-printed"
-    rejected = subprocess.run(
-        ["/usr/bin/bash", str(guard)],
-        capture_output=True,
-        text=True,
-        env={**environment, "CI_NETRC_FUTURE_FIELD": secret},
-    )
-    assert rejected.returncode == 1
-    assert "CI_NETRC_FUTURE_FIELD" in rejected.stderr
-    assert secret not in rejected.stderr
+    assert all(step["environment"]["PATH"] == canonical_path for step in workflow["steps"].values())
 
 
 def test_pytest_warning_policy_fails_owned_modules_and_reports_dependencies(tmp_path: Path) -> None:
@@ -395,7 +368,10 @@ def test_package_readme_uses_the_canonical_clone_plugin_version() -> None:
     assert "host clone plugin identifier rather than an OCI image pin" in readme
     assert "disables LFS and partial clone" in readme
     assert "second promisor-remote TLS request" in readme
-    assert "Clone-only NETRC credentials are rejected" in readme
+    assert re.search(
+        r"rejects\s+every nonempty clone-only `CI_NETRC_\*` variable",
+        readme,
+    )
 
 
 def test_upload_code_has_no_origin_or_host_rewrite_bypass() -> None:
