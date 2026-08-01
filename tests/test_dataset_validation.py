@@ -418,6 +418,17 @@ def test_verify_yolo_rejects_noncanonical_classes_txt(tmp_path: Path) -> None:
         _verify_yolo(tmp_path, "detect")
 
 
+def test_verify_yolo_accepts_crlf_classes_txt(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").unlink()
+    (tmp_path / "classes.txt").write_bytes(b"aircraft\r\nhelicopter\r\n")
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    assert result["classes"] == ["aircraft", "helicopter"]
+
+
 @pytest.mark.parametrize(
     "class_name",
     ["air\tcraft", "air\x7fcraft", "air\u0085craft", "e\u0301"],
