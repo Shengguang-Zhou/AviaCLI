@@ -157,7 +157,7 @@ def test_local_backend_uses_the_single_root_policy_verifier() -> None:
     verifier = host["commands"]
 
     assert len(verifier) == 1
-    assert "fec5345445da9a18a4eb834db24218d94ecd5116734c92b928c4f2a2710725a2" in verifier[0]
+    assert "8d8cdda6fc536a16e030a4e3f9d25d415fbe1ed4573720e7811c50d05adbf8e9" in verifier[0]
     assert "sha256sum --check --strict -" in verifier[0]
     assert (
         "/usr/bin/bash --noprofile --norc /usr/local/bin/avia-verify-woodpecker-local-toolchain"

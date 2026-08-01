@@ -185,8 +185,8 @@ The internal Woodpecker PR/manual workflow is the quality-gate source of truth. 
 3.17's local backend, `woodpeckerci/plugin-git:2.9.2` is a clone plugin identifier, not an OCI
 image pin, while every ordinary step `image` is a host executable and must be absolute
 `/usr/bin/bash`. The first `host-toolchain` step hashes and executes the sole root-installed
-`/usr/local/bin/avia-verify-woodpecker-local-toolchain` contract at SHA-256
-`fec5345445da9a18a4eb834db24218d94ecd5116734c92b928c4f2a2710725a2`; it verifies the root
+`/usr/local/bin/avia-verify-woodpecker-local-toolchain` contract at the exact SHA-256
+declared by the canonical workflow and executable contract test; it verifies the root
 policy broker's exact pipeline/repository/event/commit/approval identity plus the complete host
 toolchain. Do not duplicate a partial Bash/plugin-git verifier in this repository. Matrix
 combinations are separate
