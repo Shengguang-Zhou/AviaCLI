@@ -506,6 +506,27 @@ def test_resume_rejects_historical_state_without_exact_schema(tmp_path: Path) ->
         )
 
 
+def test_resume_rejects_complete_schema_five_state_without_version_receipt(
+    tmp_path: Path,
+) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["schema_version"] = 5
+    for file_state in state["files"].values():
+        file_state.pop("version_id")
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match=r"state schema_version must be 6"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
 def test_resume_rejects_state_with_noncanonical_session_payload(tmp_path: Path) -> None:
     path = _write_state(tmp_path)
     state = json.loads(path.read_text(encoding="utf-8"))
@@ -943,7 +964,7 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: "version-1",
+        lambda **kwargs: f"version-{Path(str(kwargs['path'])).name}",
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._complete_dataset_file_batch",
@@ -980,7 +1001,10 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     assert {
         path: item["content_type"] for path, item in state["files"].items()
     } == server_content_types
-    assert {item["version_id"] for item in completed_files} == {"version-1"}
+    assert {str(item["relative_path"]): item["version_id"] for item in completed_files} == {
+        relative_path: f"version-{Path(relative_path).name}"
+        for relative_path in server_content_types
+    }
 
 
 def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(

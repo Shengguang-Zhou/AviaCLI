@@ -142,6 +142,40 @@ def test_final_state_save_contains_every_success_after_periodic_save_failure(
     assert isinstance(persisted_files, dict)
     assert persisted_files["a.txt"]["uploaded"] is True
     assert persisted_files["b.txt"]["uploaded"] is True
+    assert persisted_files["a.txt"]["version_id"] == "version-a.txt"
+    assert persisted_files["b.txt"]["version_id"] == "version-b.txt"
+
+
+def test_out_of_order_puts_keep_each_receipt_bound_to_its_path() -> None:
+    release_a = threading.Event()
+    b_finished = threading.Event()
+    recorded: dict[str, str] = {}
+
+    def upload_one(relative_path: str) -> PutSuccess:
+        if relative_path == "a.txt":
+            assert release_a.wait(timeout=1)
+        else:
+            b_finished.set()
+            release_a.set()
+        return PutSuccess(
+            relative_path=relative_path,
+            signed={"object_key": f"objects/{relative_path}"},
+            version_id=f"version-{relative_path}",
+        )
+
+    failures = settle_concurrent_puts(
+        relative_paths=["a.txt", "b.txt"],
+        max_workers=2,
+        upload_one=upload_one,
+        record_success=lambda path, _signed, version_id: recorded.__setitem__(path, version_id),
+    )
+
+    assert b_finished.is_set()
+    assert failures == []
+    assert recorded == {
+        "a.txt": "version-a.txt",
+        "b.txt": "version-b.txt",
+    }
 
 
 def test_telemetry_failure_is_reported_after_remote_success_is_recorded() -> None:

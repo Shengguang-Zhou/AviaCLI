@@ -168,8 +168,11 @@ def test_folder_put_requires_a_concrete_exact_version_receipt(
     identity = capture_source_identity(path)
     response = _Response()
     response.headers = {} if version_id is None else {"x-amz-version-id": version_id}
+    put_calls = 0
 
     def put(*_args: object, **kwargs: object) -> _Response:
+        nonlocal put_calls
+        put_calls += 1
         kwargs["data"].read()  # type: ignore[union-attr]
         return response
 
@@ -181,9 +184,10 @@ def test_folder_put_requires_a_concrete_exact_version_receipt(
             path=path,
             expected_identity=identity,
             headers={},
-            retries=1,
+            retries=3,
             base_delay_sec=0.001,
         )
+    assert put_calls == 1
 
 
 def test_folder_put_rejects_duplicate_version_receipts(
@@ -204,8 +208,11 @@ def test_folder_put_rejects_duplicate_version_receipts(
         headers = _Headers()
 
     response.raw = _Raw()
+    put_calls = 0
 
     def put(*_args: object, **kwargs: object) -> _Response:
+        nonlocal put_calls
+        put_calls += 1
         kwargs["data"].read()  # type: ignore[union-attr]
         return response
 
@@ -217,9 +224,10 @@ def test_folder_put_rejects_duplicate_version_receipts(
             path=path,
             expected_identity=identity,
             headers={},
-            retries=1,
+            retries=3,
             base_delay_sec=0.001,
         )
+    assert put_calls == 1
 
 
 def test_folder_put_never_reloads_environment_after_route_resolution(
