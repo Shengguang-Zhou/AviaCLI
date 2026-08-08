@@ -176,7 +176,16 @@ def put_file_requests(
             reason=str(resp.reason or ""),
             detail=resp.text[:500],
         )
+    raw_headers = getattr(getattr(resp, "raw", None), "headers", None)
+    getlist = getattr(raw_headers, "getlist", None)
+    if callable(getlist):
+        version_values = tuple(getlist("x-amz-version-id"))
+    else:
+        version_value = resp.headers.get("x-amz-version-id")
+        version_values = () if version_value is None else (version_value,)
+    if len(version_values) != 1:
+        raise RuntimeError("folder PUT must return exactly one x-amz-version-id header")
     return require_s3_version_id(
-        resp.headers.get("x-amz-version-id"),
+        version_values[0],
         label="folder PUT x-amz-version-id",
     )

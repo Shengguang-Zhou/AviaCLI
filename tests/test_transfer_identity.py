@@ -175,7 +175,43 @@ def test_folder_put_requires_a_concrete_exact_version_receipt(
 
     monkeypatch.setattr("requests.Session", lambda: _Session(put))
 
-    with pytest.raises(RuntimeError, match="folder PUT x-amz-version-id"):
+    with pytest.raises(RuntimeError, match=r"folder PUT.*x-amz-version-id"):
+        _put_file_with_retries(
+            route=_route(),
+            path=path,
+            expected_identity=identity,
+            headers={},
+            retries=1,
+            base_delay_sec=0.001,
+        )
+
+
+def test_folder_put_rejects_duplicate_version_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "sample.bin"
+    path.write_bytes(b"validated")
+    identity = capture_source_identity(path)
+    response = _Response()
+
+    class _Headers:
+        @staticmethod
+        def getlist(_name: str) -> list[str]:
+            return ["version-1", "version-2"]
+
+    class _Raw:
+        headers = _Headers()
+
+    response.raw = _Raw()
+
+    def put(*_args: object, **kwargs: object) -> _Response:
+        kwargs["data"].read()  # type: ignore[union-attr]
+        return response
+
+    monkeypatch.setattr("requests.Session", lambda: _Session(put))
+
+    with pytest.raises(RuntimeError, match="exactly one x-amz-version-id"):
         _put_file_with_retries(
             route=_route(),
             path=path,
