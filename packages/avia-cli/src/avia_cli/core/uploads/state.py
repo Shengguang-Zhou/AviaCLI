@@ -29,6 +29,7 @@ from avia_cli.core.uploads.response_contracts import (
     decode_complete_import_response,
     decode_dataset_session_identity,
     require_canonical_import_id,
+    require_s3_version_id,
     validate_source_import_request,
 )
 from avia_cli.core.uploads.source_file import SourceIdentity, open_verified_source
@@ -61,6 +62,7 @@ _STATE_FILE_FIELDS = {
     "content_type",
     "height",
     "object_key",
+    "version_id",
     "sha256",
     "size_bytes",
     "source_identity",
@@ -358,8 +360,8 @@ def _load_resume_state(
 def _validate_state(state: dict[str, Any], *, path: Path) -> None:
     if set(state) != _STATE_FIELDS:
         raise ValueError("state fields must be exact")
-    if state.get("schema_version") != 5:
-        raise ValueError("state schema_version must be 5")
+    if state.get("schema_version") != 6:
+        raise ValueError("state schema_version must be 6")
     phase = state.get("phase")
     if phase not in {"session_pending", "uploading", "completed"}:
         raise ValueError("state phase is invalid")
@@ -489,6 +491,15 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
                 )
             except RuntimeError as exc:
                 raise ValueError(str(exc)) from exc
+        version_id = raw.get("version_id")
+        if version_id is not None:
+            try:
+                require_s3_version_id(
+                    version_id,
+                    label=f"state file version_id for {relative_path}",
+                )
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
         identity = raw.get("source_identity")
         if not isinstance(identity, dict) or set(identity) != {
             "device",
@@ -506,7 +517,10 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
         if identity["size_bytes"] != raw["size_bytes"]:
             raise ValueError(f"state file source identity size mismatch: {relative_path}")
         if raw["uploaded"] and (
-            not sha256 or raw.get("object_key") is None or content_type is None
+            not sha256
+            or raw.get("object_key") is None
+            or content_type is None
+            or version_id is None
         ):
             raise ValueError(f"uploaded state file lacks remote identity: {relative_path}")
         if raw["uploaded"]:
@@ -519,7 +533,9 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
                 raise ValueError(
                     f"uploaded state file object_key does not match dataset session: {relative_path}"
                 )
-        if not raw["uploaded"] and (raw.get("object_key") is not None or content_type is not None):
+        if not raw["uploaded"] and (
+            raw.get("object_key") is not None or content_type is not None or version_id is not None
+        ):
             raise ValueError(f"non-uploaded state file has remote identity: {relative_path}")
 
 

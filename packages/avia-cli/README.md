@@ -164,6 +164,10 @@ separators, dot forms, percent encodings, whitespace, Unicode, and controls are 
 allowed suffix character, including underscore or hyphen, may appear first.
 Signed responses remain bound to the session workspace, and every object key equals the exact
 session import prefix plus `/files/<relative-path>` before any PUT starts.
+Each successful PUT must return one concrete `x-amz-version-id`; the CLI durably records that
+opaque receipt and includes it in the matching batch-complete entry. Resume schema 6 is the only
+accepted local state and requires the receipt for every uploaded file. Missing receipts and schema
+5 states fail rather than falling back to the latest object version or compatibility migration.
 Every submitted PUT is settled before return. A resume-state write error cannot skip executor
 shutdown or hide later successful remote side effects: the CLI records all successes, attempts one
 final durable state write, and then raises the complete PUT/state/completion error set.

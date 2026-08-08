@@ -130,7 +130,7 @@ def _write_state(
     path.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "api": "https://avia.eurekailab.com/api/v1",
                 "phase": "uploading",
                 "project_id": project_id,
@@ -156,6 +156,7 @@ def _write_state(
                         "height": 0,
                         "content_type": None,
                         "object_key": None,
+                        "version_id": None,
                         "source_identity": {
                             "device": 1,
                             "inode": 1,
@@ -237,6 +238,7 @@ def test_resume_state_rejects_uploaded_object_outside_dataset_session(tmp_path: 
             "sha256": "a" * 64,
             "content_type": "text/plain",
             "object_key": "foreign/import/files/classes.txt",
+            "version_id": "version-classes",
         }
     )
     path.write_text(json.dumps(state), encoding="utf-8")
@@ -941,7 +943,7 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: None,
+        lambda **_kwargs: "version-1",
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._complete_dataset_file_batch",
@@ -970,7 +972,7 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     assert result["mask_count"] == 0
     state_path = next(state_dir.rglob("*.json"))
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["schema_version"] == 5
+    assert state["schema_version"] == 6
     assert (
         state["session_response"]["object_key"]
         == state["complete_response"]["dataset_manifest_ref"]["storage"]["manifest_path"]
@@ -978,6 +980,7 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     assert {
         path: item["content_type"] for path, item in state["files"].items()
     } == server_content_types
+    assert {item["version_id"] for item in completed_files} == {"version-1"}
 
 
 def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
@@ -1127,6 +1130,7 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
                     "relative_path",
                     "sha256",
                     "size_bytes",
+                    "version_id",
                 }
                 if str(item["relative_path"]).endswith(".png"):
                     expected_fields.update({"width", "height"})
@@ -1160,7 +1164,7 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: None,
+        lambda **_kwargs: "version-1",
     )
     monkeypatch.setattr("avia_cli.core.uploads.api.time.sleep", lambda _delay: None)
 
@@ -1336,7 +1340,7 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
         lambda _args, *, route: probe_routes.append(route),
     )
 
-    def put_with_one_failure(**kwargs: object) -> None:
+    def put_with_one_failure(**kwargs: object) -> str:
         put_routes.append(kwargs["route"])
         relative_path = Path(str(kwargs["path"])).relative_to(source).as_posix()
         if relative_path == "labels/train/a.txt":
@@ -1348,6 +1352,7 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
             assert failure_released.wait(timeout=1)
             time.sleep(0.05)
             success_finished.set()
+        return f"version-{relative_path}"
 
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
@@ -1436,7 +1441,7 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: None,
+        lambda **_kwargs: "version-1",
     )
     success_started = threading.Event()
     failure_released = threading.Event()

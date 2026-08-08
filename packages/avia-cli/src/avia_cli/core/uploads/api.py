@@ -288,8 +288,8 @@ def _put_file(
     headers: dict[str, object],
     connect_timeout: float = 15.0,
     read_timeout: float = _DEFAULT_UPLOAD_READ_TIMEOUT,
-) -> None:
-    _transfer_put_file_requests(
+) -> str:
+    return _transfer_put_file_requests(
         route=route,
         source=source,
         headers=headers,
@@ -309,8 +309,8 @@ def _put_file_with_retries(
     base_delay_sec: float,
     connect_timeout: float = 15.0,
     read_timeout: float = _DEFAULT_UPLOAD_READ_TIMEOUT,
-) -> None:
-    _retry_put_file(
+) -> str:
+    return _retry_put_file(
         put_file=_put_file,
         is_retryable=_is_retryable_upload_error,
         route=route,

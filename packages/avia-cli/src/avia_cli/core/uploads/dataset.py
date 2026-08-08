@@ -93,6 +93,7 @@ class _PutStateTracker:
 def _record_successful_put(
     relative_path: str,
     signed: dict[str, Any],
+    version_id: str,
     *,
     file_by_relative: dict[str, dict[str, Any]],
     state_files: dict[str, dict[str, Any]],
@@ -113,6 +114,7 @@ def _record_successful_put(
         **existing,
         "uploaded": True,
         "object_key": signed["object_key"],
+        "version_id": version_id,
         "content_type": signed["content_type"],
         "sha256": file_item["sha256"],
         "size_bytes": file_item["size_bytes"],
@@ -474,7 +476,7 @@ def _upload_validated_dataset(
             idempotency_key=idempotency_key,
         )
         state = {
-            "schema_version": 5,
+            "schema_version": 6,
             "phase": "session_pending",
             "api": api,
             "project_id": project_id,
@@ -496,6 +498,7 @@ def _upload_validated_dataset(
                     "height": int(item.get("height") or 0),
                     "content_type": None,
                     "object_key": None,
+                    "version_id": None,
                     "source_identity": dict(source_identities[str(item["relative_path"])]),
                 }
                 for item in files
@@ -559,6 +562,7 @@ def _upload_validated_dataset(
             item: dict[str, object] = {
                 "relative_path": relative_path,
                 "object_key": state_item["object_key"],
+                "version_id": state_item["version_id"],
                 "size_bytes": state_item["size_bytes"],
                 "content_type": state_item["content_type"],
                 "sha256": state_item["sha256"],
@@ -790,6 +794,7 @@ def _upload_validated_dataset(
                 return PutSuccess(
                     relative_path=relative_path,
                     signed=signed,
+                    version_id=outcome.value,
                     telemetry_error=outcome.telemetry_error,
                 )
 

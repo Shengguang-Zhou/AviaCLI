@@ -689,7 +689,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
     state_path.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "api": "http://127.0.0.1:8080/api/v1",
                 "phase": "completed",
                 "project_id": "proj_123456789abc",
@@ -733,6 +733,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                         "object_key": (
                             "project_assets/ws_123/scope_123/imports/imp_done/files/classes.txt"
                         ),
+                        "version_id": "version-classes",
                         "source_identity": {
                             "device": 1,
                             "inode": 1,

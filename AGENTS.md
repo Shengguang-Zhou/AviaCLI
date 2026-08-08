@@ -93,6 +93,12 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 - Folder PUTs use one exact, case-insensitive header contract. Never retry invalid URLs, headers,
   source identities, or programmer errors. Retry only the typed transport
   error and HTTP 408/429/500/502/503/504 responses.
+- Every successful folder PUT must return one concrete `x-amz-version-id` receipt. The CLI
+  durably records that exact opaque identity before streaming completion and sends it in the
+  corresponding `files:batch-complete` entry. Missing, `null`, malformed, or response-lost
+  receipts are failures; the CLI never stats or completes against the latest object version.
+  Resume state schema 6 is the sole accepted state shape and requires `version_id` for every
+  uploaded file; schema 5 is retired rather than migrated or dual-read.
 - Folder signing requests contain only `relative_path`, `size_bytes`, and lowercase SHA-256.
   Content type is server-owned canonical metadata: the client validates the signed response and
   exact `Content-Type` header, persists only that server value after a successful PUT, and reuses

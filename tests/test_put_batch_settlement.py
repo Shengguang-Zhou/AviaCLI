@@ -27,9 +27,10 @@ def test_state_record_failure_cannot_leave_running_puts_unsettled() -> None:
         return PutSuccess(
             relative_path=relative_path,
             signed={"object_key": f"objects/{relative_path}"},
+            version_id=f"version-{relative_path}",
         )
 
-    def record_success(relative_path: str, _signed: dict[str, object]) -> None:
+    def record_success(relative_path: str, _signed: dict[str, object], _version_id: str) -> None:
         recorded.append(relative_path)
         if relative_path == "a.txt":
             release_sibling.set()
@@ -62,6 +63,7 @@ def test_final_state_save_contains_every_success_after_periodic_save_failure(
             "uploaded": False,
             "streamed": False,
             "object_key": None,
+            "version_id": None,
             "content_type": None,
             "sha256": "",
             "size_bytes": 1,
@@ -108,6 +110,7 @@ def test_final_state_save_contains_every_success_after_periodic_save_failure(
                 "object_key": f"objects/{relative_path}",
                 "content_type": "text/plain",
             },
+            version_id=f"version-{relative_path}",
         )
 
     failures = settle_concurrent_puts(
@@ -151,9 +154,10 @@ def test_telemetry_failure_is_reported_after_remote_success_is_recorded() -> Non
         upload_one=lambda relative_path: PutSuccess(
             relative_path=relative_path,
             signed={"object_key": "objects/a.txt"},
+            version_id="version-a.txt",
             telemetry_error=telemetry_error,
         ),
-        record_success=lambda relative_path, _signed: recorded.append(relative_path),
+        record_success=lambda relative_path, _signed, _version_id: recorded.append(relative_path),
     )
 
     assert recorded == ["a.txt"]

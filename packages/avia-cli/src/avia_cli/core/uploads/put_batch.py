@@ -14,6 +14,7 @@ class PutSuccess:
 
     relative_path: str
     signed: dict[str, Any]
+    version_id: str
     telemetry_error: BaseException | None = None
 
 
@@ -22,7 +23,7 @@ def settle_concurrent_puts(
     relative_paths: list[str],
     max_workers: int,
     upload_one: Callable[[str], PutSuccess],
-    record_success: Callable[[str, dict[str, Any]], None],
+    record_success: Callable[[str, dict[str, Any], str], None],
 ) -> list[PutFailure]:
     """Wait for every submitted PUT and account for every successful side effect."""
 
@@ -58,7 +59,7 @@ def settle_concurrent_puts(
             )
             return
         try:
-            record_success(result.relative_path, result.signed)
+            record_success(result.relative_path, result.signed, result.version_id)
         except Exception as exc:
             fail("file-put-state", expected_path, exc)
         if result.telemetry_error is not None:

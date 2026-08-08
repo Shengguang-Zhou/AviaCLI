@@ -199,7 +199,7 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
 
 def put_file_with_retries(
     *,
-    put_file: Callable[..., None],
+    put_file: Callable[..., str],
     is_retryable: Callable[[BaseException], bool],
     route: Any,
     path: Any,
@@ -209,7 +209,7 @@ def put_file_with_retries(
     base_delay_sec: float,
     connect_timeout: float,
     read_timeout: float,
-) -> None:
+) -> str:
     attempts = int(retries)
     delay = float(base_delay_sec)
     if attempts <= 0 or delay <= 0:
@@ -218,14 +218,14 @@ def put_file_with_retries(
     with open_verified_source(path, expected_identity) as source:
         for attempt in range(1, attempts + 1):
             try:
-                put_file(
+                version_id = put_file(
                     route=route,
                     source=source,
                     headers=headers,
                     connect_timeout=connect_timeout,
                     read_timeout=read_timeout,
                 )
-                return
+                return version_id
             except SourceFileChangedError:
                 raise
             except Exception as exc:

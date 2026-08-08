@@ -143,9 +143,10 @@ def _prepare_upload(
         lambda *_args, **_kwargs: None,
     )
 
-    def put(**kwargs: object) -> None:
+    def put(**kwargs: object) -> str:
         remote_effects.append(f"put:{Path(str(kwargs['path'])).name}")
         put_barrier.wait(timeout=2)
+        return f"version-{Path(str(kwargs['path'])).name}"
 
     monkeypatch.setattr("avia_cli.core.uploads.dataset._put_file_with_retries", put)
     monkeypatch.setattr(
