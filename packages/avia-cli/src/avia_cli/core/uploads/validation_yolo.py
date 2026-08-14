@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,8 @@ from avia_cli.core.uploads.validation_common import (
 )
 
 _YOLO_METADATA_NAMES = {"data.yaml", "data.yml", "dataset.yaml", "dataset.yml", "classes.txt"}
-_NORMALIZED_ROUNDING_TOLERANCE = 1e-6
+_NORMALIZED_ROUNDING_TOLERANCE = 0.75e-6
+_NORMALIZED_ROUNDING_FLOAT_SLACK = 4 * math.ulp(1.0)
 
 
 def validate_yolo(
@@ -338,11 +340,12 @@ def _validate_box(values: list[float]) -> str | None:
     if values[2] <= 0.0 or values[3] <= 0.0:
         return "box width and height must be positive"
     center_x, center_y, width, height = values
+    limit = _NORMALIZED_ROUNDING_TOLERANCE + _NORMALIZED_ROUNDING_FLOAT_SLACK
     if (
-        center_x - width / 2 < -_NORMALIZED_ROUNDING_TOLERANCE
-        or center_x + width / 2 > 1 + _NORMALIZED_ROUNDING_TOLERANCE
-        or center_y - height / 2 < -_NORMALIZED_ROUNDING_TOLERANCE
-        or center_y + height / 2 > 1 + _NORMALIZED_ROUNDING_TOLERANCE
+        center_x - width / 2 < -limit
+        or center_x + width / 2 > 1 + limit
+        or center_y - height / 2 < -limit
+        or center_y + height / 2 > 1 + limit
     ):
         return "box corners must fit inside normalized image bounds"
     return None

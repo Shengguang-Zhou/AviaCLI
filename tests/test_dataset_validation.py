@@ -131,6 +131,45 @@ def test_verify_yolo_pose_uses_exact_kpt_shape(tmp_path: Path) -> None:
     assert result["error_count"] == 0
 
 
+@pytest.mark.parametrize("task_key", ["detect", "pose"])
+def test_verify_yolo_accepts_exact_six_decimal_bbox_rounding_limit(
+    tmp_path: Path,
+    task_key: str,
+) -> None:
+    suffix = " 0.2 0.3 2" if task_key == "pose" else ""
+    _write_yolo_dataset(
+        tmp_path,
+        label=f"0 0.50000075 0.5 1 1{suffix}\n",
+        kpt_shape=[1, 3] if task_key == "pose" else None,
+    )
+
+    result = _verify_yolo(tmp_path, task_key)
+
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize("task_key", ["detect", "pose"])
+def test_verify_yolo_rejects_bbox_beyond_six_decimal_rounding_limit(
+    tmp_path: Path,
+    task_key: str,
+) -> None:
+    suffix = " 0.2 0.3 2" if task_key == "pose" else ""
+    _write_yolo_dataset(
+        tmp_path,
+        label=f"0 0.5000008 0.5 1 1{suffix}\n",
+        kpt_shape=[1, 3] if task_key == "pose" else None,
+    )
+
+    result = _verify_yolo(tmp_path, task_key)
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == f"invalid_yolo_{task_key}_row"
+        and "corners must fit" in item["message"]
+        for item in result["errors"]
+    )
+
+
 def test_verify_yolo_pose_rejects_two_dimensional_keypoints(tmp_path: Path) -> None:
     _write_yolo_dataset(
         tmp_path,
