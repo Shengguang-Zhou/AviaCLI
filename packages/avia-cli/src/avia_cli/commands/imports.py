@@ -3,20 +3,13 @@ from __future__ import annotations
 import json
 
 from avia_cli.context import api_from_args, token_from_args
-from avia_cli.core.uploads.dataset import create_source_import
 from avia_cli.core.uploads.contracts import require_format_task
-from avia_cli.core.uploads.manifest import scan_source_manifest
+from avia_cli.core.uploads.dataset import create_source_import
 from avia_cli.core.uploads.state import _source_import_payload
 
 
 def handle_import_command(args) -> int:
-    require_format_task(format_name=str(args.format), task_key=str(args.task_key))
-    if args.import_command == "scan":
-        result = scan_source_manifest(args.source, format_name=str(args.format))
-        result["format"] = str(args.format)
-        result["task_key"] = str(args.task_key)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+    require_format_task(format_name=args.format, task_key=args.task_key)
     if args.import_command == "create":
         payload = _source_import_payload(args)
         api = api_from_args(args)

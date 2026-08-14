@@ -24,6 +24,9 @@ class _Response:
     reason = "OK"
     text = ""
 
+    def __init__(self) -> None:
+        self.headers = {"x-amz-version-id": "version-1"}
+
 
 class _Session:
     def __init__(self, put) -> None:
@@ -139,7 +142,7 @@ def test_folder_put_uses_the_explicit_frozen_route_proxy_snapshot(
         proxy_items=tuple(proxy_settings.items()),
     )
 
-    _put_file_with_retries(
+    version_id = _put_file_with_retries(
         route=route,
         path=path,
         expected_identity=identity,
@@ -148,9 +151,83 @@ def test_folder_put_uses_the_explicit_frozen_route_proxy_snapshot(
         base_delay_sec=0.001,
     )
 
+    assert version_id == "version-1"
     assert len(observed) == 1
     assert observed[0]["proxies"] == proxy_settings
     assert session.trust_env is False
+
+
+@pytest.mark.parametrize("version_id", [None, "", "null", "x" * 1025])
+def test_folder_put_requires_a_concrete_exact_version_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version_id: object,
+) -> None:
+    path = tmp_path / "sample.bin"
+    path.write_bytes(b"validated")
+    identity = capture_source_identity(path)
+    response = _Response()
+    response.headers = {} if version_id is None else {"x-amz-version-id": version_id}
+    put_calls = 0
+
+    def put(*_args: object, **kwargs: object) -> _Response:
+        nonlocal put_calls
+        put_calls += 1
+        kwargs["data"].read()  # type: ignore[union-attr]
+        return response
+
+    monkeypatch.setattr("requests.Session", lambda: _Session(put))
+
+    with pytest.raises(RuntimeError, match=r"folder PUT.*x-amz-version-id"):
+        _put_file_with_retries(
+            route=_route(),
+            path=path,
+            expected_identity=identity,
+            headers={},
+            retries=3,
+            base_delay_sec=0.001,
+        )
+    assert put_calls == 1
+
+
+def test_folder_put_rejects_duplicate_version_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "sample.bin"
+    path.write_bytes(b"validated")
+    identity = capture_source_identity(path)
+    response = _Response()
+
+    class _Headers:
+        @staticmethod
+        def getlist(_name: str) -> list[str]:
+            return ["version-1", "version-2"]
+
+    class _Raw:
+        headers = _Headers()
+
+    response.raw = _Raw()
+    put_calls = 0
+
+    def put(*_args: object, **kwargs: object) -> _Response:
+        nonlocal put_calls
+        put_calls += 1
+        kwargs["data"].read()  # type: ignore[union-attr]
+        return response
+
+    monkeypatch.setattr("requests.Session", lambda: _Session(put))
+
+    with pytest.raises(RuntimeError, match="exactly one x-amz-version-id"):
+        _put_file_with_retries(
+            route=_route(),
+            path=path,
+            expected_identity=identity,
+            headers={},
+            retries=3,
+            base_delay_sec=0.001,
+        )
+    assert put_calls == 1
 
 
 def test_folder_put_never_reloads_environment_after_route_resolution(
@@ -176,6 +253,7 @@ def test_folder_put_never_reloads_environment_after_route_resolution(
         response = requests.Response()
         response.status_code = 200
         response.reason = "OK"
+        response.headers["x-amz-version-id"] = "version-1"
         response._content = b""
         response._content_consumed = True
         return response

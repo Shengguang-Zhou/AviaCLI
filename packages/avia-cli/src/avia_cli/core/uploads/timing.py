@@ -4,7 +4,8 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 from avia_cli.core.uploads.source_file import (
     SourceFileChangedError,
@@ -14,6 +15,41 @@ from avia_cli.core.uploads.source_file import (
 
 T = TypeVar("T")
 _MIB = 1024 * 1024
+
+
+class UploadTimingRecordError(RuntimeError):
+    """A timing observation failed after its wrapped operation settled."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        record_error: BaseException,
+        operation_error: BaseException | None = None,
+    ) -> None:
+        self.name = name
+        self.record_error = record_error
+        self.operation_error = operation_error
+        message = (
+            f"upload timing record failed: name={name} "
+            f"error_type={type(record_error).__name__}: {record_error}"
+        )
+        if operation_error is not None:
+            message = (
+                f"upload operation and timing record both failed: name={name} "
+                f"operation_error_type={type(operation_error).__name__}: "
+                f"{operation_error}; timing_error_type={type(record_error).__name__}: "
+                f"{record_error}"
+            )
+        super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class TimedCallOutcome(Generic[T]):
+    """A successful operation plus any post-success telemetry failure."""
+
+    value: T
+    telemetry_error: UploadTimingRecordError | None
 
 
 class UploadTimingRecorder:
@@ -59,16 +95,62 @@ class UploadTimingRecorder:
         byte_count: int = 0,
         **kwargs: Any,
     ) -> T:
+        outcome = self.capture_call(
+            name,
+            fn,
+            file_count=file_count,
+            byte_count=byte_count,
+            **kwargs,
+        )
+        if outcome.telemetry_error is not None:
+            raise outcome.telemetry_error
+        return outcome.value
+
+    def capture_call(
+        self,
+        name: str,
+        fn: Callable[..., T],
+        *,
+        file_count: int = 0,
+        byte_count: int = 0,
+        **kwargs: Any,
+    ) -> TimedCallOutcome[T]:
+        """Keep a successful side effect observable even if telemetry fails."""
+
         started = time.monotonic()
         try:
-            return fn(**kwargs)
-        finally:
+            value = fn(**kwargs)
+        except Exception as operation_error:
+            try:
+                self.record(
+                    name,
+                    duration_sec=time.monotonic() - started,
+                    file_count=file_count,
+                    byte_count=byte_count,
+                )
+            except Exception as record_error:
+                raise UploadTimingRecordError(
+                    name=name,
+                    operation_error=operation_error,
+                    record_error=record_error,
+                ) from operation_error
+            raise
+        try:
             self.record(
                 name,
                 duration_sec=time.monotonic() - started,
                 file_count=file_count,
                 byte_count=byte_count,
             )
+        except Exception as record_error:
+            return TimedCallOutcome(
+                value=value,
+                telemetry_error=UploadTimingRecordError(
+                    name=name,
+                    record_error=record_error,
+                ),
+            )
+        return TimedCallOutcome(value=value, telemetry_error=None)
 
     def record_accepted_files(self, count: int, *, elapsed_sec: float) -> None:
         with self._lock:
@@ -117,7 +199,7 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
 
 def put_file_with_retries(
     *,
-    put_file: Callable[..., None],
+    put_file: Callable[..., str],
     is_retryable: Callable[[BaseException], bool],
     route: Any,
     path: Any,
@@ -127,7 +209,7 @@ def put_file_with_retries(
     base_delay_sec: float,
     connect_timeout: float,
     read_timeout: float,
-) -> None:
+) -> str:
     attempts = int(retries)
     delay = float(base_delay_sec)
     if attempts <= 0 or delay <= 0:
@@ -136,14 +218,14 @@ def put_file_with_retries(
     with open_verified_source(path, expected_identity) as source:
         for attempt in range(1, attempts + 1):
             try:
-                put_file(
+                version_id = put_file(
                     route=route,
                     source=source,
                     headers=headers,
                     connect_timeout=connect_timeout,
                     read_timeout=read_timeout,
                 )
-                return
+                return version_id
             except SourceFileChangedError:
                 raise
             except Exception as exc:

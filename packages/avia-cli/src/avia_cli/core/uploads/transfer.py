@@ -7,6 +7,7 @@ from urllib import parse
 from avia_cli.core.errors import _UploadTransportError
 from avia_cli.core.uploads.media_types import require_canonical_media_type
 from avia_cli.core.uploads.source_file import VerifiedSourceFile
+from avia_cli.core.uploads.response_contracts import require_s3_version_id
 
 _HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
@@ -118,7 +119,7 @@ def put_file_requests(
     upload_error: type[RuntimeError],
     connect_timeout: float,
     read_timeout: float,
-) -> None:
+) -> str:
     import requests
 
     expected_length = int(source.identity["size_bytes"])
@@ -175,3 +176,16 @@ def put_file_requests(
             reason=str(resp.reason or ""),
             detail=resp.text[:500],
         )
+    raw_headers = getattr(getattr(resp, "raw", None), "headers", None)
+    getlist = getattr(raw_headers, "getlist", None)
+    if callable(getlist):
+        version_values = tuple(getlist("x-amz-version-id"))
+    else:
+        version_value = resp.headers.get("x-amz-version-id")
+        version_values = () if version_value is None else (version_value,)
+    if len(version_values) != 1:
+        raise RuntimeError("folder PUT must return exactly one x-amz-version-id header")
+    return require_s3_version_id(
+        version_values[0],
+        label="folder PUT x-amz-version-id",
+    )

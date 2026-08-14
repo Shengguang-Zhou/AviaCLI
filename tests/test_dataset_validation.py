@@ -9,6 +9,17 @@ import yaml
 from PIL import Image
 from pycocotools import mask as mask_utils
 
+from avia_cli.core.uploads.class_catalog import (
+    MAX_CLASS_CATALOG_SIZE,
+    MAX_CLASS_ID,
+    MAX_CLASS_NAME_CODEPOINTS,
+    require_canonical_class_catalog,
+    require_canonical_class_index,
+    require_class_count,
+    require_indexed_class_catalog,
+)
+from avia_cli.core.uploads import validation_coco
+from avia_cli.core.uploads.inventory import DatasetRoleInventory
 from avia_cli.core.uploads.inspect import inspect_dataset, verify_dataset
 from avia_cli.core.uploads.manifest import scan_source_manifest
 from avia_cli.core.uploads.validation import require_valid_dataset
@@ -118,6 +129,73 @@ def test_verify_yolo_pose_uses_exact_kpt_shape(tmp_path: Path) -> None:
 
     assert result["status"] == "ok"
     assert result["error_count"] == 0
+
+
+@pytest.mark.parametrize("task_key", ["detect", "pose"])
+def test_verify_yolo_accepts_exact_six_decimal_bbox_rounding_limit(
+    tmp_path: Path,
+    task_key: str,
+) -> None:
+    suffix = " 0.2 0.3 2" if task_key == "pose" else ""
+    _write_yolo_dataset(
+        tmp_path,
+        label=f"0 0.50000075 0.5 1 1{suffix}\n",
+        kpt_shape=[1, 3] if task_key == "pose" else None,
+    )
+
+    result = _verify_yolo(tmp_path, task_key)
+
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize("task_key", ["detect", "pose"])
+def test_verify_yolo_rejects_bbox_beyond_six_decimal_rounding_limit(
+    tmp_path: Path,
+    task_key: str,
+) -> None:
+    suffix = " 0.2 0.3 2" if task_key == "pose" else ""
+    _write_yolo_dataset(
+        tmp_path,
+        label=f"0 0.5000008 0.5 1 1{suffix}\n",
+        kpt_shape=[1, 3] if task_key == "pose" else None,
+    )
+
+    result = _verify_yolo(tmp_path, task_key)
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == f"invalid_yolo_{task_key}_row"
+        and "corners must fit" in item["message"]
+        for item in result["errors"]
+    )
+
+
+def test_verify_yolo_pose_rejects_two_dimensional_keypoints(tmp_path: Path) -> None:
+    _write_yolo_dataset(
+        tmp_path,
+        label="0 0.5 0.5 0.25 0.25 0.2 0.3\n",
+        kpt_shape=[1, 2],
+    )
+
+    result = _verify_yolo(tmp_path, "pose")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == "invalid_yolo_pose_metadata" for item in result["errors"])
+
+
+def test_verify_yolo_rejects_duplicate_kpt_shape_metadata(tmp_path: Path) -> None:
+    _write_yolo_dataset(
+        tmp_path,
+        label="0 0.5 0.5 0.25 0.25 0.2 0.3 2\n",
+        kpt_shape=[1, 3],
+    )
+    (tmp_path / "data.yaml").write_text(
+        "names: [aircraft]\nkpt_shape: [1, 2]\nkpt_shape: [1, 3]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="duplicate YOLO metadata kpt_shape"):
+        _verify_yolo(tmp_path, "pose")
 
 
 def test_verify_yolo_pose_accepts_six_decimal_boundary_rounding(tmp_path: Path) -> None:
@@ -246,7 +324,16 @@ def test_verify_yolo_rejects_missing_class_names(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "names",
-    [["aircraft", ""], ["aircraft", "aircraft"], [" aircraft"], [1]],
+    [
+        ["aircraft", ""],
+        ["aircraft", "aircraft"],
+        [" aircraft"],
+        ["air\tcraft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+        ["e\u0301"],
+        [1],
+    ],
 )
 def test_verify_yolo_rejects_ambiguous_class_names(tmp_path: Path, names: list[object]) -> None:
     _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
@@ -256,16 +343,211 @@ def test_verify_yolo_rejects_ambiguous_class_names(tmp_path: Path, names: list[o
         _verify_yolo(tmp_path, "detect")
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        {0: "aircraft", "0": "helicopter"},
+        {0: "aircraft", "0": 7},
+    ],
+)
+def test_verify_yolo_rejects_mapping_ids_that_collide_after_integer_coercion(
+    tmp_path: Path,
+    names: dict[object, object],
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").write_text(yaml.safe_dump({"names": names}), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="class ids must be unique"):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize(
+    "raw_index",
+    [True, False, 0.0, 1.9, " 0", "0 ", "+0", "00", "01", "-0"],
+)
+def test_class_catalog_rejects_noncanonical_indices(raw_index: object) -> None:
+    with pytest.raises(ValueError):
+        require_indexed_class_catalog(
+            {raw_index: "aircraft"},
+            label="names",
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "names: {+0: aircraft}\n",
+        "names: {00: aircraft}\n",
+        "names: {0.0: aircraft}\n",
+        "names: {false: aircraft}\n",
+        "names: {' 0': aircraft}\n",
+        "names: {'0 ': aircraft}\n",
+    ],
+)
+def test_verify_yolo_rejects_lexically_noncanonical_indices(
+    tmp_path: Path,
+    metadata: str,
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").write_text(metadata, encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize("nc", [True, 1.0, "1", "+1", " 1", "01"])
+def test_class_count_rejects_non_integer_runtime_values(nc: object) -> None:
+    with pytest.raises(ValueError):
+        require_class_count(nc, label="nc", allow_zero=False)
+
+
+def test_class_catalog_accepts_exact_global_limits() -> None:
+    classes = [f"class-{index}" for index in range(MAX_CLASS_CATALOG_SIZE - 1)]
+    classes.append("\U0001f6e9" * MAX_CLASS_NAME_CODEPOINTS)
+
+    assert require_canonical_class_catalog(classes, label="classes") == classes
+    assert require_canonical_class_index(MAX_CLASS_ID, label="class_id") == MAX_CLASS_ID
+    assert (
+        require_class_count(
+            MAX_CLASS_CATALOG_SIZE,
+            label="nc",
+            allow_zero=False,
+        )
+        == MAX_CLASS_CATALOG_SIZE
+    )
+
+
+def test_verify_yolo_accepts_nc_as_count_at_10000_class_boundary(tmp_path: Path) -> None:
+    classes = [f"class-{index}" for index in range(MAX_CLASS_CATALOG_SIZE)]
+    _write_yolo_dataset(
+        tmp_path,
+        label=f"{MAX_CLASS_ID} 0.5 0.5 0.25 0.25\n",
+        names=classes,
+    )
+    metadata_path = tmp_path / "data.yaml"
+    metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    metadata["nc"] = MAX_CLASS_CATALOG_SIZE
+    metadata_path.write_text(yaml.safe_dump(metadata), encoding="utf-8")
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    assert len(result["classes"]) == MAX_CLASS_CATALOG_SIZE
+    assert result["classes"][MAX_CLASS_ID] == f"class-{MAX_CLASS_ID}"
+
+
+def test_class_catalog_rejects_values_beyond_global_limits() -> None:
+    with pytest.raises(ValueError, match="at most 200 Unicode code points"):
+        require_canonical_class_catalog(
+            ["\U0001f6e9" * (MAX_CLASS_NAME_CODEPOINTS + 1)],
+            label="classes",
+        )
+    with pytest.raises(ValueError, match="at most 10000 classes"):
+        require_canonical_class_catalog(
+            [f"class-{index}" for index in range(MAX_CLASS_CATALOG_SIZE + 1)],
+            label="classes",
+        )
+    with pytest.raises(ValueError, match="between 0 and 9999"):
+        require_canonical_class_index(MAX_CLASS_ID + 1, label="class_id")
+    with pytest.raises(ValueError, match="at most 10000"):
+        require_class_count(
+            MAX_CLASS_CATALOG_SIZE + 1,
+            label="nc",
+            allow_zero=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "names: [aircraft]\nnc: true\n",
+        "names: [aircraft]\nnc: 1.0\n",
+        "names: [aircraft]\nnc: '1'\n",
+        'names: [aircraft]\nnc: !!int "1"\n',
+        "names: [aircraft]\nnc: !!int 1\n",
+        "names: [aircraft]\nnc: &count 1\n",
+        "names: [aircraft]\nnc: +1\n",
+        "names: [aircraft]\nnc: 01\n",
+        "names: [aircraft]\nnc: 1_0\n",
+    ],
+)
+def test_verify_yolo_rejects_noncanonical_nc(
+    tmp_path: Path,
+    metadata: str,
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").write_text(metadata, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="invalid YOLO nc"):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [
+        [" aircraft"],
+        ["aircraft "],
+        [""],
+        ["aircraft", "aircraft"],
+        [7],
+        ["e\u0301"],
+        ["air\x00craft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+    ],
+)
+def test_class_catalog_rejects_noncanonical_names(catalog: list[object]) -> None:
+    with pytest.raises(ValueError):
+        require_canonical_class_catalog(catalog, label="classes")
+
+
 def test_verify_yolo_rejects_noncanonical_classes_txt(tmp_path: Path) -> None:
     _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
     (tmp_path / "data.yaml").unlink()
     (tmp_path / "classes.txt").write_text("aircraft\n\nhelicopter \n", encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="canonical non-empty"):
+    with pytest.raises(SystemExit, match="YOLO names"):
         _verify_yolo(tmp_path, "detect")
 
 
-@pytest.mark.parametrize("declared_classes", [[""], ["aircraft", "aircraft"]])
+def test_verify_yolo_accepts_crlf_classes_txt(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").unlink()
+    (tmp_path / "classes.txt").write_bytes(b"aircraft\r\nhelicopter\r\n")
+
+    result = _verify_yolo(tmp_path, "detect")
+
+    assert result["status"] == "ok"
+    assert result["classes"] == ["aircraft", "helicopter"]
+
+
+@pytest.mark.parametrize(
+    "class_name",
+    ["air\tcraft", "air\x7fcraft", "air\u0085craft", "e\u0301"],
+)
+def test_verify_yolo_classes_txt_rejects_controls_and_non_nfc(
+    tmp_path: Path,
+    class_name: str,
+) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / "data.yaml").unlink()
+    (tmp_path / "classes.txt").write_text(f"{class_name}\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="YOLO names"):
+        _verify_yolo(tmp_path, "detect")
+
+
+@pytest.mark.parametrize(
+    "declared_classes",
+    [
+        [""],
+        ["aircraft", "aircraft"],
+        ["air\tcraft"],
+        ["air\x7fcraft"],
+        ["air\u0085craft"],
+        ["e\u0301"],
+    ],
+)
 def test_upload_validation_rejects_invalid_declared_class_names(
     tmp_path: Path, declared_classes: list[str]
 ) -> None:
@@ -469,6 +751,20 @@ def _write_coco_dataset(root: Path, *, task_key: str, include_task_field: bool =
     (annotations / "instances.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_second_coco_split(root: Path, payload: dict[str, object]) -> None:
+    _write_image(root / "images" / "second.png")
+    images = payload["images"]
+    annotations = payload["annotations"]
+    assert isinstance(images, list) and isinstance(images[0], dict)
+    assert isinstance(annotations, list) and isinstance(annotations[0], dict)
+    images[0].update({"id": 2, "file_name": "images/second.png"})
+    annotations[0].update({"id": 2, "image_id": 2})
+    (root / "annotations" / "second.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
 def test_verify_coco_preserves_supported_uppercase_image_suffix(tmp_path: Path) -> None:
     _write_coco_dataset(tmp_path, task_key="detect")
     (tmp_path / "images" / "sample.png").rename(tmp_path / "images" / "sample.PNG")
@@ -487,6 +783,15 @@ def test_verify_coco_enforces_task_specific_fields(tmp_path: Path, task_key: str
     _write_coco_dataset(tmp_path, task_key=task_key)
 
     result = verify_dataset(source=tmp_path, format_name="coco", task_key=task_key)
+
+    assert result["status"] == "ok"
+    assert result["classes"] == ["aircraft"]
+
+
+def test_inspect_coco_reports_the_parsed_class_catalog(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+
+    result = inspect_dataset(source=tmp_path, format_name="coco", task_key="detect")
 
     assert result["status"] == "ok"
     assert result["classes"] == ["aircraft"]
@@ -518,6 +823,95 @@ def test_verify_coco_json_decode_error_is_structured_with_location(tmp_path: Pat
             "message": "COCO annotation JSON is malformed",
         }
     ]
+
+
+def test_verify_coco_rejects_duplicate_json_fields(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    raw = annotation_path.read_text(encoding="utf-8").replace(
+        '"bbox": [1, 2, 5, 4]',
+        '"bbox": [0, 0, 1, 1], "bbox": [1, 2, 5, 4]',
+    )
+    annotation_path.write_text(raw, encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "invalid_coco_json"
+    assert "duplicate JSON field: bbox" in result["errors"][0]["reason"]
+
+
+def test_verify_coco_rejects_nonfinite_json_constants(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    raw = annotation_path.read_text(encoding="utf-8").replace('"area": 20', '"area": NaN')
+    annotation_path.write_text(raw, encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "invalid_coco_json"
+    assert "non-finite JSON constant: NaN" in result["errors"][0]["reason"]
+
+
+@pytest.mark.parametrize(
+    ("field", "error_code"),
+    [("area", "invalid_coco_area"), ("iscrowd", "invalid_coco_iscrowd")],
+)
+def test_verify_coco_requires_canonical_annotation_metadata(
+    tmp_path: Path,
+    field: str,
+    error_code: str,
+) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0].pop(field)
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == error_code for item in result["errors"])
+
+
+@pytest.mark.parametrize("annotation_id", [-1, True, 1.0, "1"])
+def test_verify_coco_rejects_noncanonical_annotation_ids(
+    tmp_path: Path, annotation_id: object
+) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0]["id"] = annotation_id
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == "invalid_coco_annotation_id" for item in result["errors"])
+
+
+def test_verify_coco_resolves_each_image_by_exact_key_without_index_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+
+    class _ExactLookupOnlyIndex(dict[str, Path]):
+        def items(self) -> object:
+            raise AssertionError("COCO validation must not scan the image index per image")
+
+    def build_exact_lookup_only_index(
+        source_root: Path, *, inventory: DatasetRoleInventory
+    ) -> validation_coco.CocoImageIndex:
+        return _ExactLookupOnlyIndex(
+            {relative: source_root / relative for relative in inventory.image_paths}
+        )
+
+    monkeypatch.setattr(validation_coco, "_build_image_index", build_exact_lookup_only_index)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "ok"
 
 
 def test_verify_coco_rejects_control_characters_in_file_name(tmp_path: Path) -> None:
@@ -553,7 +947,7 @@ def test_verify_coco_rejects_basename_lookup_across_split_directories(tmp_path: 
     )
 
 
-def test_verify_coco_does_not_resolve_images_from_hidden_client_state(tmp_path: Path) -> None:
+def test_verify_coco_rejects_nested_avia_dataset_members(tmp_path: Path) -> None:
     _write_coco_dataset(tmp_path, task_key="detect")
     hidden_image = tmp_path / "images" / ".avia" / "sample.png"
     hidden_image.parent.mkdir(parents=True)
@@ -566,7 +960,10 @@ def test_verify_coco_does_not_resolve_images_from_hidden_client_state(tmp_path: 
     result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
 
     assert result["status"] == "failed"
-    assert any(item["code"] == "invalid_image" for item in result["errors"])
+    assert any(
+        item["code"] == "unexpected_coco_member" and item["path"] == "images/.avia/sample.png"
+        for item in result["errors"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -643,6 +1040,25 @@ def test_verify_coco_rejects_truncated_uncompressed_rle(tmp_path: Path) -> None:
     result = verify_dataset(source=tmp_path, format_name="coco", task_key="segment")
 
     assert any(item["code"] == "invalid_coco_segmentation" for item in result["errors"])
+
+
+def test_verify_coco_rejects_internal_zero_uncompressed_rle_run(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="segment")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0]["segmentation"] = {
+        "size": [12, 16],
+        "counts": [0, 20, 0, 172],
+    }
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="segment")
+
+    assert result["status"] == "failed"
+    error_item = next(
+        item for item in result["errors"] if item["code"] == "invalid_coco_segmentation"
+    )
+    assert "zero run only as the first count" in error_item["reason"]
 
 
 def test_verify_coco_accepts_lossless_compressed_rle(tmp_path: Path) -> None:
@@ -731,6 +1147,208 @@ def test_verify_coco_rejects_cross_split_taxonomy_drift(tmp_path: Path) -> None:
     assert any(item["code"] == "conflicting_coco_taxonomy" for item in result["errors"])
 
 
+def test_verify_coco_normalizes_cross_split_category_order_by_id(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    first = tmp_path / "annotations" / "instances.json"
+    first_payload = json.loads(first.read_text(encoding="utf-8"))
+    first_payload["categories"].append({"id": 2, "name": "helicopter"})
+    first.write_text(json.dumps(first_payload), encoding="utf-8")
+    second_payload = json.loads(json.dumps(first_payload))
+    second_payload["categories"].reverse()
+    _write_second_coco_split(tmp_path, second_payload)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_coco_rejects_cross_split_category_extension_drift(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    first = tmp_path / "annotations" / "instances.json"
+    first_payload = json.loads(first.read_text(encoding="utf-8"))
+    first_payload["categories"][0]["source_metadata"] = {"revision": "one"}
+    first.write_text(json.dumps(first_payload), encoding="utf-8")
+    second_payload = json.loads(json.dumps(first_payload))
+    second_payload["categories"][0]["source_metadata"] = {"revision": "two"}
+    _write_second_coco_split(tmp_path, second_payload)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert any(item["code"] == "conflicting_coco_taxonomy" for item in result["errors"])
+
+
+def test_verify_coco_preserves_missing_supercategory_in_taxonomy_identity(
+    tmp_path: Path,
+) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    first = tmp_path / "annotations" / "instances.json"
+    second_payload = json.loads(first.read_text(encoding="utf-8"))
+    second_payload["categories"][0]["supercategory"] = ""
+    _write_second_coco_split(tmp_path, second_payload)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert any(item["code"] == "conflicting_coco_taxonomy" for item in result["errors"])
+
+
+def test_verify_coco_rejects_type_drift_in_category_extensions(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    first = tmp_path / "annotations" / "instances.json"
+    first_payload = json.loads(first.read_text(encoding="utf-8"))
+    first_payload["categories"][0]["source_revision"] = True
+    first.write_text(json.dumps(first_payload), encoding="utf-8")
+    second_payload = json.loads(json.dumps(first_payload))
+    second_payload["categories"][0]["source_revision"] = 1
+    _write_second_coco_split(tmp_path, second_payload)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert any(item["code"] == "conflicting_coco_taxonomy" for item in result["errors"])
+
+
+def test_verify_coco_ignores_object_key_order_in_category_extensions(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="detect")
+    first = tmp_path / "annotations" / "instances.json"
+    first_payload = json.loads(first.read_text(encoding="utf-8"))
+    first_payload["categories"][0]["source_metadata"] = {"revision": 1, "owner": "avia"}
+    first.write_text(json.dumps(first_payload), encoding="utf-8")
+    second_payload = json.loads(json.dumps(first_payload))
+    second_payload["categories"][0]["source_metadata"] = {"owner": "avia", "revision": 1}
+    _write_second_coco_split(tmp_path, second_payload)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="detect")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_coco_pose_normalizes_missing_skeleton_to_empty(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["categories"][0].pop("skeleton")
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_coco_pose_normalizes_missing_skeleton_across_splits(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    first = tmp_path / "annotations" / "instances.json"
+    second_payload = json.loads(first.read_text(encoding="utf-8"))
+    second_payload["categories"][0].pop("skeleton")
+    _write_second_coco_split(tmp_path, second_payload)
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "skeleton",
+    [
+        [[1, 2], [1, 2]],
+        [[1, 2], [2, 1]],
+    ],
+)
+def test_verify_coco_pose_rejects_duplicate_skeleton_edges(
+    tmp_path: Path,
+    skeleton: list[list[int]],
+) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["categories"][0]["keypoints"] = ["left_eye", "right_eye"]
+    payload["categories"][0]["skeleton"] = skeleton
+    payload["annotations"][0]["keypoints"] = [3, 4, 2, 5, 6, 2]
+    payload["annotations"][0]["num_keypoints"] = 2
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "failed"
+    assert any(
+        item["code"] == "invalid_coco_pose_category"
+        and item["message"] == "skeleton edges must be unique"
+        for item in result["errors"]
+    )
+
+
+def test_verify_coco_pose_accepts_missing_num_keypoints(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0].pop("num_keypoints")
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_coco_pose_accepts_invisible_keypoint_coordinates_inside_image(
+    tmp_path: Path,
+) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0]["keypoints"] = [16, 12, 0]
+    payload["annotations"][0]["num_keypoints"] = 0
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "ok"
+
+
+def test_verify_coco_pose_rejects_invisible_keypoint_outside_image(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["annotations"][0]["keypoints"] = [17, 12, 0]
+    payload["annotations"][0]["num_keypoints"] = 0
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == "invalid_coco_keypoints" for item in result["errors"])
+
+
+def test_verify_coco_pose_requires_one_schema_across_all_categories(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["categories"].append(
+        {
+            "id": 2,
+            "name": "helicopter",
+            "keypoints": ["left", "right"],
+            "skeleton": [[1, 2]],
+        }
+    )
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == "conflicting_coco_pose_schema" for item in result["errors"])
+
+
+def test_verify_coco_pose_requires_left_right_counterparts(tmp_path: Path) -> None:
+    _write_coco_dataset(tmp_path, task_key="pose")
+    annotation_path = tmp_path / "annotations" / "instances.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    payload["categories"][0]["keypoints"] = ["left_eye"]
+    annotation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="coco", task_key="pose")
+
+    assert result["status"] == "failed"
+    assert any(item["code"] == "invalid_coco_pose_category" for item in result["errors"])
+
+
 def test_verify_coco_rejects_image_listed_in_two_splits(tmp_path: Path) -> None:
     _write_coco_dataset(tmp_path, task_key="detect")
     first = tmp_path / "annotations" / "instances.json"
@@ -764,6 +1382,15 @@ def test_verify_imagenet_requires_consistent_class_directories(tmp_path: Path) -
     _write_imagenet_dataset(tmp_path)
 
     result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
+
+    assert result["status"] == "ok"
+    assert result["classes"] == ["aircraft"]
+
+
+def test_inspect_imagenet_reports_the_directory_class_catalog(tmp_path: Path) -> None:
+    _write_imagenet_dataset(tmp_path)
+
+    result = inspect_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
 
     assert result["status"] == "ok"
     assert result["classes"] == ["aircraft"]
@@ -817,25 +1444,30 @@ def test_verify_imagenet_indexes_images_once_instead_of_scanning_per_class(
     assert counted_paths.iterations == 2
 
 
-def test_verify_imagenet_does_not_count_images_from_hidden_client_state(tmp_path: Path) -> None:
+def test_verify_imagenet_rejects_nested_avia_inside_class(tmp_path: Path) -> None:
     _write_image(tmp_path / "train" / "aircraft" / ".avia" / "only.png")
     _write_image(tmp_path / "val" / "aircraft" / ".avia" / "only.png")
 
     result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
 
     assert result["status"] == "failed"
-    assert [item["code"] for item in result["errors"]].count("empty_imagenet_class") == 2
+    assert {
+        item["path"] for item in result["errors"] if item["code"] == "unexpected_imagenet_member"
+    } == {
+        "train/aircraft/.avia/only.png",
+        "val/aircraft/.avia/only.png",
+    }
 
 
-def test_verify_imagenet_ignores_hidden_client_state_role_directories(tmp_path: Path) -> None:
+def test_verify_imagenet_rejects_nested_avia_role_directories(tmp_path: Path) -> None:
     _write_imagenet_dataset(tmp_path)
     _write_image(tmp_path / "train" / ".avia" / "hidden.png")
     _write_image(tmp_path / "val" / ".avia" / "hidden.png")
 
     result = verify_dataset(source=tmp_path, format_name="imagenet", task_key="classify")
 
-    assert result["status"] == "ok"
-    assert result["classes"] == ["aircraft"]
+    assert result["status"] == "failed"
+    assert any(item["code"] == "unexpected_imagenet_member" for item in result["errors"])
 
 
 def test_verify_imagenet_rejects_unknown_validation_class(tmp_path: Path) -> None:
@@ -1005,14 +1637,62 @@ def test_anomalib_scan_failure_preserves_canonical_binary_taxonomy(
     assert result["errors"][0]["code"] == "invalid_image"
 
 
-def test_verify_anomalib_ignores_hidden_client_state_directory(tmp_path: Path) -> None:
+def test_verify_anomalib_rejects_nested_avia_directory(tmp_path: Path) -> None:
     _write_anomalib_dataset(tmp_path)
     _write_image(tmp_path / "test" / ".avia" / "hidden.png")
 
     result = verify_dataset(source=tmp_path, format_name="anomalib", task_key="ad")
 
-    assert result["status"] == "ok"
+    assert result["status"] == "failed"
     assert result["classes"] == ["good", "bad"]
+    assert any(
+        item["code"] == "unexpected_anomalib_directory" and item["path"] == "test/.avia"
+        for item in result["errors"]
+    )
+
+
+def test_verify_ignores_only_root_avia_import_state(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    state_path = tmp_path / ".avia" / "imports" / "project" / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("local client state", encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="yolo", task_key="detect")
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+
+    assert result["status"] == "ok"
+    assert not any(str(item["relative_path"]).startswith(".avia/") for item in manifest["files"])
+
+
+def test_verify_does_not_hide_root_avia_file(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / ".avia").write_text("dataset member", encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="yolo", task_key="detect")
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+
+    assert result["status"] == "failed"
+    assert ".avia" in {str(item["relative_path"]) for item in manifest["files"]}
+    assert any(
+        item["code"] == "unexpected_yolo_member" and item["path"] == ".avia"
+        for item in result["errors"]
+    )
+
+
+def test_verify_does_not_hide_root_avia_imports_regular_file(tmp_path: Path) -> None:
+    _write_yolo_dataset(tmp_path, label="0 0.5 0.5 0.25 0.25\n")
+    (tmp_path / ".avia").mkdir()
+    (tmp_path / ".avia" / "imports").write_text("dataset member", encoding="utf-8")
+
+    result = verify_dataset(source=tmp_path, format_name="yolo", task_key="detect")
+    manifest = scan_source_manifest(tmp_path, format_name="yolo")
+
+    assert result["status"] == "failed"
+    assert ".avia/imports" in {str(item["relative_path"]) for item in manifest["files"]}
+    assert any(
+        item["code"] == "unexpected_yolo_member" and item["path"] == ".avia/imports"
+        for item in result["errors"]
+    )
 
 
 @pytest.mark.parametrize("filename", ["README", "LICENSE", "source_records.json"])

@@ -15,11 +15,97 @@ from avia_cli.core.uploads.dataset import (
     _assert_resume_source_unchanged,
     _capture_manifest_identities,
     prepare_dataset_upload,
-    upload_dataset,
+    upload_prepared_dataset,
 )
 from avia_cli.core.uploads.source_file import SourceFileChangedError
 from avia_cli.core.uploads.state import _exclusive_upload_state_lock, _load_resume_state
 from avia_cli.parser import _build_parser
+
+
+def _upload_via_canonical_path(args: object, *, api: str, token: object) -> dict:
+    prepared = prepare_dataset_upload(args)
+    return upload_prepared_dataset(args, api=api, token=token, prepared=prepared)
+
+
+def _dataset_remote_identity(
+    *,
+    import_id: str,
+    request_payload: dict[str, object],
+    owner_prefix: str = "project_assets/ws_123/scope_123",
+) -> tuple[str, dict[str, object], dict[str, object]]:
+    object_key = f"{owner_prefix}/imports/{import_id}/manifest.json"
+    ref_id = f"dm_{import_id}"
+    ref = {
+        "id": ref_id,
+        "format": request_payload["format"],
+        "item_count": request_payload["file_count"],
+        "byte_count": request_payload["total_bytes"],
+        "storage": {
+            "kind": "minio",
+            "manifest_path": object_key,
+            "path_prefix": f"{owner_prefix}/imports/{import_id}",
+            "lakefs_repo": None,
+            "lakefs_commit": None,
+            "dataset_version_id": None,
+        },
+    }
+    lease = {
+        "id": f"lease_{import_id}",
+        "scope": "read",
+        "access": "object_ref",
+        "dataset_manifest_ref_id": ref_id,
+    }
+    return object_key, ref, lease
+
+
+def _queued_complete_response(
+    *,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    workspace_id: str = "ws_123",
+    scope_id: str = "scope_123",
+    worker_task_id: str = "task_123",
+) -> dict[str, object]:
+    _object_key, ref, lease = _dataset_remote_identity(
+        import_id=import_id,
+        request_payload=request_payload,
+        owner_prefix=f"project_assets/{workspace_id}/{scope_id}",
+    )
+    return {
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "import_id": import_id,
+        "status": "queued",
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+        "reason": "queued",
+        "dispatch_mode": "celery",
+        "worker_task_id": worker_task_id,
+    }
+
+
+def _pending_session_response(
+    *,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    workspace_id: str = "ws_123",
+) -> dict[str, object]:
+    object_key, ref, lease = _dataset_remote_identity(
+        import_id=import_id,
+        request_payload=request_payload,
+        owner_prefix=f"project_assets/{workspace_id}/scope_123",
+    )
+    return {
+        "workspace_id": workspace_id,
+        "project_id": project_id,
+        "import_id": import_id,
+        "status": "pending_upload",
+        "object_key": object_key,
+        "dataset_manifest_ref": ref,
+        "read_lease": lease,
+    }
 
 
 def _write_state(
@@ -32,10 +118,19 @@ def _write_state(
 ) -> Path:
     path = state_dir / project_id / f"{idempotency_key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    session_payload: dict[str, object] = {
+        "idempotency_key": idempotency_key,
+        "format": "yolo",
+        "root_name": "coco8",
+        "task_key": task_key,
+        "classes": ["aircraft"],
+        "file_count": 1,
+        "total_bytes": 1,
+    }
     path.write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 6,
                 "api": "https://avia.eurekailab.com/api/v1",
                 "phase": "uploading",
                 "project_id": project_id,
@@ -44,15 +139,12 @@ def _write_state(
                 "source": "/data/coco8",
                 "format": "yolo",
                 "task_key": task_key,
-                "session_payload": {
-                    "idempotency_key": idempotency_key,
-                    "format": "yolo",
-                    "root_name": "coco8",
-                    "task_key": task_key,
-                    "classes": ["aircraft"],
-                    "file_count": 1,
-                    "total_bytes": 1,
-                },
+                "session_payload": session_payload,
+                "session_response": _pending_session_response(
+                    project_id=project_id,
+                    import_id=import_id,
+                    request_payload=session_payload,
+                ),
                 "complete_response": None,
                 "files": {
                     "classes.txt": {
@@ -64,6 +156,7 @@ def _write_state(
                         "height": 0,
                         "content_type": None,
                         "object_key": None,
+                        "version_id": None,
                         "source_identity": {
                             "device": 1,
                             "inode": 1,
@@ -96,6 +189,71 @@ def test_resume_state_identity_includes_task_key(tmp_path: Path) -> None:
     assert state["task_key"] == "pose"
 
 
+@pytest.mark.parametrize("duplicate_location", ["top", "session", "file"])
+def test_resume_state_rejects_duplicate_json_fields_recursively(
+    tmp_path: Path,
+    duplicate_location: str,
+) -> None:
+    path = _write_state(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    raw = json.dumps(payload, sort_keys=True)
+    if duplicate_location == "top":
+        raw = raw.replace(
+            '"phase": "uploading"',
+            '"phase": "uploading", "phase": "uploading"',
+            1,
+        )
+    elif duplicate_location == "session":
+        raw = raw.replace(
+            '"status": "pending_upload"',
+            '"status": "pending_upload", "status": "pending_upload"',
+            1,
+        )
+    else:
+        entry = json.dumps(payload["files"]["classes.txt"], sort_keys=True)
+        files = json.dumps(payload["files"], sort_keys=True)
+        duplicate_files = f'{{"classes.txt": {entry}, "classes.txt": {entry}}}'
+        assert files in raw
+        raw = raw.replace(files, duplicate_files, 1)
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="duplicate JSON field"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
+def test_resume_state_rejects_uploaded_object_outside_dataset_session(tmp_path: Path) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state_file = state["files"]["classes.txt"]
+    state_file.update(
+        {
+            "uploaded": True,
+            "sha256": "a" * 64,
+            "content_type": "text/plain",
+            "object_key": "foreign/import/files/classes.txt",
+            "version_id": "version-classes",
+        }
+    )
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="object_key does not match dataset session"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
 def test_resume_rejects_completed_state_with_prepublication_version_reference(
     tmp_path: Path,
 ) -> None:
@@ -103,21 +261,44 @@ def test_resume_rejects_completed_state_with_prepublication_version_reference(
     state = json.loads(path.read_text(encoding="utf-8"))
     state["phase"] = "completed"
     state["complete_response"] = {
-        "workspace_id": "ws_123",
-        "project_id": "proj_123456789abc",
-        "import_id": "imp_123",
-        "status": "queued",
-        "dataset_manifest_ref": {"id": "dm_123"},
-        "read_lease": {"id": "lease_123"},
-        "reason": "queued",
-        "dispatch_mode": "celery",
-        "worker_task_id": "task_123",
+        **_queued_complete_response(
+            project_id="proj_123456789abc",
+            import_id="imp_123",
+            request_payload=state["session_payload"],
+        ),
         "dataset_version_id": "dv_123",
         "version_ref": {"id": "dv_123"},
     }
     path.write_text(json.dumps(state), encoding="utf-8")
 
     with pytest.raises(SystemExit, match="fields must be exact"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
+def test_resume_rejects_completion_manifest_drift_from_persisted_session(
+    tmp_path: Path,
+) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    complete = _queued_complete_response(
+        project_id="proj_123456789abc",
+        import_id="imp_123",
+        request_payload=state["session_payload"],
+    )
+    storage = complete["dataset_manifest_ref"]["storage"]
+    storage["manifest_path"] = "project_assets/ws_123/scope_123/imports/imp_123/replacement.json"
+    state["phase"] = "completed"
+    state["complete_response"] = complete
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="exact project_assets workspace/scope import manifest"):
         _load_resume_state(
             state_dir=tmp_path,
             project_id="proj_123456789abc",
@@ -180,20 +361,12 @@ def test_resume_ignores_completed_history_when_one_active_exact_state_exists(
     completed_path = _write_state(tmp_path, import_id="imp_completed", task_key="detect")
     completed = json.loads(completed_path.read_text(encoding="utf-8"))
     completed["phase"] = "completed"
-    completed["complete_response"] = {
-        "workspace_id": "ws_123",
-        "project_id": "proj_123456789abc",
-        "import_id": "imp_completed",
-        "status": "queued",
-        "dataset_manifest_ref": {"id": "dm_completed"},
-        "read_lease": {
-            "id": "lease_completed",
-            "dataset_manifest_ref_id": "dm_completed",
-        },
-        "reason": "queued",
-        "dispatch_mode": "celery",
-        "worker_task_id": "task_completed",
-    }
+    completed["complete_response"] = _queued_complete_response(
+        project_id="proj_123456789abc",
+        import_id="imp_completed",
+        request_payload=completed["session_payload"],
+        worker_task_id="task_completed",
+    )
     completed_path.write_text(json.dumps(completed), encoding="utf-8")
     _write_state(
         tmp_path,
@@ -333,6 +506,27 @@ def test_resume_rejects_historical_state_without_exact_schema(tmp_path: Path) ->
         )
 
 
+def test_resume_rejects_complete_schema_five_state_without_version_receipt(
+    tmp_path: Path,
+) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["schema_version"] = 5
+    for file_state in state["files"].values():
+        file_state.pop("version_id")
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match=r"state schema_version must be 6"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
 def test_resume_rejects_state_with_noncanonical_session_payload(tmp_path: Path) -> None:
     path = _write_state(tmp_path)
     state = json.loads(path.read_text(encoding="utf-8"))
@@ -340,6 +534,85 @@ def test_resume_rejects_state_with_noncanonical_session_payload(tmp_path: Path) 
     path.write_text(json.dumps(state), encoding="utf-8")
 
     with pytest.raises(SystemExit, match=r"invalid resume state.*session_payload fields"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("format", "coco", "format does not match"),
+        ("task_key", "pose", "task_key does not match"),
+        ("root_name", "other", "root_name does not match"),
+    ],
+)
+def test_resume_rejects_session_identity_drift(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["session_payload"][field] = value
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match=rf"invalid resume state.*{message}"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="yolo",
+            task_key="detect",
+        )
+
+
+def test_resume_rejects_noncanonical_anomalib_taxonomy(tmp_path: Path) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["format"] = "anomalib"
+    state["task_key"] = "ad"
+    state["session_payload"].update(
+        {
+            "format": "anomalib",
+            "task_key": "ad",
+            "classes": ["bad", "good"],
+        }
+    )
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match=r"invalid resume state.*exactly"):
+        _load_resume_state(
+            state_dir=tmp_path,
+            project_id="proj_123456789abc",
+            api="https://avia.eurekailab.com/api/v1",
+            source="/data/coco8",
+            import_format="anomalib",
+            task_key="ad",
+        )
+
+
+@pytest.mark.parametrize(
+    "class_name",
+    ["air\tcraft", "air\x7fcraft", "air\u0085craft", "e\u0301"],
+)
+def test_resume_rejects_noncanonical_class_catalog(
+    tmp_path: Path,
+    class_name: str,
+) -> None:
+    path = _write_state(tmp_path)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["session_payload"]["classes"] = [class_name]
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match=r"invalid resume state.*session_payload classes"):
         _load_resume_state(
             state_dir=tmp_path,
             project_id="proj_123456789abc",
@@ -509,7 +782,11 @@ def test_folder_upload_validates_dataset_before_session_or_state_write(
     )
 
     with pytest.raises(SystemExit, match="invalid_yolo_detect_row"):
-        upload_dataset(args, api="https://avia.eurekailab.com/api/v1", token="token")
+        _upload_via_canonical_path(
+            args,
+            api="https://avia.eurekailab.com/api/v1",
+            token="token",
+        )
 
     assert not state_dir.exists()
 
@@ -566,7 +843,11 @@ def test_folder_upload_persists_pending_uuid_session_before_first_post_and_resum
     monkeypatch.setattr("avia_cli.core.uploads.dataset._create_dataset_session", lose_response)
 
     with pytest.raises(RuntimeError, match="response lost"):
-        upload_dataset(parser.parse_args(argv), api="https://avia.example/api/v1", token="token")
+        _upload_via_canonical_path(
+            parser.parse_args(argv),
+            api="https://avia.example/api/v1",
+            token="token",
+        )
 
     first_payload = seen_payloads[0]
     key = str(first_payload["idempotency_key"])
@@ -585,7 +866,7 @@ def test_folder_upload_persists_pending_uuid_session_before_first_post_and_resum
     }
 
     with pytest.raises(RuntimeError, match="response lost"):
-        upload_dataset(
+        _upload_via_canonical_path(
             parser.parse_args([*argv, "--resume"]),
             api="https://avia.example/api/v1",
             token="token",
@@ -637,7 +918,11 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
 
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._create_dataset_session",
-        lambda **_kwargs: {"import_id": "imp_server_mime"},
+        lambda **kwargs: _pending_session_response(
+            project_id="proj_123456789abc",
+            import_id="imp_server_mime",
+            request_payload=kwargs["payload"],
+        ),
     )
 
     def sign(**kwargs: object) -> dict[str, object]:
@@ -653,7 +938,10 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
                 {
                     **item,
                     "content_type": content_type,
-                    "object_key": f"objects/{relative_path}",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/"
+                        f"imp_server_mime/files/{relative_path}"
+                    ),
                     "upload_url": f"https://objects.example/{relative_path}",
                     "required_headers": {"Content-Type": content_type},
                     "expires_in": 900,
@@ -676,7 +964,7 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: None,
+        lambda **kwargs: f"version-{Path(str(kwargs['path'])).name}",
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._complete_dataset_file_batch",
@@ -684,20 +972,18 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._complete_import",
-        lambda **_kwargs: {
-            "workspace_id": "ws_123",
-            "project_id": "proj_123456789abc",
-            "import_id": "imp_server_mime",
-            "status": "queued",
-            "dataset_manifest_ref": {"id": "dm_123"},
-            "read_lease": {"id": "lease_123"},
-            "reason": "queued",
-            "dispatch_mode": "celery",
-            "worker_task_id": "task_123",
-        },
+        lambda **kwargs: _queued_complete_response(
+            project_id="proj_123456789abc",
+            import_id="imp_server_mime",
+            request_payload=kwargs["request_payload"],
+        ),
     )
 
-    result = upload_dataset(args, api="https://avia.example/api/v1", token="token")
+    result = _upload_via_canonical_path(
+        args,
+        api="https://avia.example/api/v1",
+        token="token",
+    )
 
     assert {
         str(item["relative_path"]): str(item["content_type"]) for item in completed_files
@@ -707,10 +993,18 @@ def test_folder_upload_signs_only_content_identity_and_persists_server_mime(
     assert result["mask_count"] == 0
     state_path = next(state_dir.rglob("*.json"))
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["schema_version"] == 4
+    assert state["schema_version"] == 6
+    assert (
+        state["session_response"]["object_key"]
+        == state["complete_response"]["dataset_manifest_ref"]["storage"]["manifest_path"]
+    )
     assert {
         path: item["content_type"] for path, item in state["files"].items()
     } == server_content_types
+    assert {str(item["relative_path"]): item["version_id"] for item in completed_files} == {
+        relative_path: f"version-{Path(relative_path).name}"
+        for relative_path in server_content_types
+    }
 
 
 def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
@@ -758,6 +1052,7 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
         ]
     )
     calls: list[tuple[str, str, dict[str, object] | None]] = []
+    session_request_payload: dict[str, object] = {}
     poll_responses = iter(
         [
             {
@@ -780,7 +1075,18 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
                 "error": {},
                 "dataset_validation": None,
                 "dataset_version_id": "dsv_exact_flow",
-                "version_ref": {"dataset_version_id": "dsv_exact_flow"},
+                "version_ref": {
+                    "dataset_version_id": "dsv_exact_flow",
+                    "storage_kind": "minio_lakefs",
+                    "lakefs_repo": "avia-datasets",
+                    "lakefs_commit": "commit-exact-flow",
+                    "lakefs_tag": "dsv_exact_flow",
+                    "path_prefix": ("dataset-manifests/scope_exact/dsv_exact_flow"),
+                    "manifest_path": ("dataset-manifests/scope_exact/dsv_exact_flow/manifest.json"),
+                    "content_digest": f"sha256:{'a' * 64}",
+                    "item_count": 1,
+                    "byte_count": 1,
+                },
             },
         ]
     )
@@ -794,14 +1100,20 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
         if url.endswith("/imports/dataset-session"):
             assert method == "POST"
             assert payload is not None
+            session_request_payload.update(payload)
+            object_key, ref, lease = _dataset_remote_identity(
+                import_id=import_id,
+                request_payload=payload,
+                owner_prefix="project_assets/ws_exact/scope_exact",
+            )
             return {
                 "workspace_id": "ws_exact",
                 "project_id": project_id,
                 "import_id": import_id,
                 "status": "pending_upload",
-                "object_key": "imports/imp_exact_flow/manifest.json",
-                "dataset_manifest_ref": {"id": "dm_exact_flow"},
-                "read_lease": {"id": "lease_exact_flow"},
+                "object_key": object_key,
+                "dataset_manifest_ref": ref,
+                "read_lease": lease,
             }
         if url.endswith("/files:batch-upload-urls"):
             assert method == "POST"
@@ -819,7 +1131,10 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
                     {
                         **item,
                         "content_type": f"application/x-avia-file-{index}",
-                        "object_key": f"imports/imp_exact_flow/files/{item['relative_path']}",
+                        "object_key": (
+                            "project_assets/ws_exact/scope_exact/imports/"
+                            f"imp_exact_flow/files/{item['relative_path']}"
+                        ),
                         "upload_url": f"https://objects.example/{index}",
                         "required_headers": {"Content-Type": f"application/x-avia-file-{index}"},
                         "expires_in": 900,
@@ -839,6 +1154,7 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
                     "relative_path",
                     "sha256",
                     "size_bytes",
+                    "version_id",
                 }
                 if str(item["relative_path"]).endswith(".png"):
                     expected_fields.update({"width", "height"})
@@ -852,17 +1168,14 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
             }
         if url.endswith(f"/imports/{import_id}/complete"):
             assert method == "POST" and payload == {}
-            return {
-                "workspace_id": "ws_exact",
-                "project_id": project_id,
-                "import_id": import_id,
-                "status": "queued",
-                "dataset_manifest_ref": {"id": "dm_exact_flow"},
-                "read_lease": {"id": "lease_exact_flow"},
-                "reason": "queued",
-                "dispatch_mode": "celery",
-                "worker_task_id": "avia-import:imp_exact_flow:1",
-            }
+            return _queued_complete_response(
+                workspace_id="ws_exact",
+                project_id=project_id,
+                import_id=import_id,
+                request_payload=session_request_payload,
+                scope_id="scope_exact",
+                worker_task_id="avia-import:imp_exact_flow:1",
+            )
         if url.endswith(f"/ingestion-jobs/{import_id}"):
             assert method == "GET" and payload is None
             return next(poll_responses)
@@ -875,14 +1188,16 @@ def test_folder_upload_uses_one_exact_session_batch_complete_and_poll_contract(
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: None,
+        lambda **_kwargs: "version-1",
     )
     monkeypatch.setattr("avia_cli.core.uploads.api.time.sleep", lambda _delay: None)
 
-    result = upload_dataset(args, api=api, token="token")
+    result = _upload_via_canonical_path(args, api=api, token="token")
 
     assert result["job"]["status"] == "succeeded"
     assert result["job"]["dataset_version_id"] == "dsv_exact_flow"
+    assert result["dataset_manifest_ref"] == result["complete"]["dataset_manifest_ref"]
+    assert result["read_lease"] == result["complete"]["read_lease"]
     assert [url.rsplit("/", 1)[-1] for _method, url, _payload in calls] == [
         "dataset-session",
         "files:batch-upload-urls",
@@ -955,13 +1270,13 @@ def test_anomalib_folder_upload_uses_binary_taxonomy_in_session_payload(
     monkeypatch.setattr("avia_cli.core.uploads.dataset._create_dataset_session", capture_payload)
 
     with pytest.raises(RuntimeError, match="stop after session payload"):
-        upload_dataset(
+        _upload_via_canonical_path(
             parser.parse_args(argv),
             api="https://avia.example/api/v1",
             token="token",
         )
     with pytest.raises(RuntimeError, match="stop after session payload"):
-        upload_dataset(
+        _upload_via_canonical_path(
             parser.parse_args([*argv, "--resume"]),
             api="https://avia.example/api/v1",
             token="token",
@@ -1015,7 +1330,11 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._create_dataset_session",
-        lambda **_kwargs: {"import_id": "imp_concurrent_failure"},
+        lambda **kwargs: _pending_session_response(
+            project_id="proj_123456789abc",
+            import_id="imp_concurrent_failure",
+            request_payload=kwargs["payload"],
+        ),
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._batch_upload_urls",
@@ -1025,7 +1344,10 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
                     "relative_path": item["relative_path"],
                     "content_type": "application/octet-stream",
                     "upload_url": f"https://objects.example/{item['relative_path']}",
-                    "object_key": f"objects/{item['relative_path']}",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/"
+                        f"imp_concurrent_failure/files/{item['relative_path']}"
+                    ),
                     "required_headers": {"Content-Type": "application/octet-stream"},
                 }
                 for item in kwargs["files"]
@@ -1042,7 +1364,7 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
         lambda _args, *, route: probe_routes.append(route),
     )
 
-    def put_with_one_failure(**kwargs: object) -> None:
+    def put_with_one_failure(**kwargs: object) -> str:
         put_routes.append(kwargs["route"])
         relative_path = Path(str(kwargs["path"])).relative_to(source).as_posix()
         if relative_path == "labels/train/a.txt":
@@ -1054,6 +1376,7 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
             assert failure_released.wait(timeout=1)
             time.sleep(0.05)
             success_finished.set()
+        return f"version-{relative_path}"
 
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
@@ -1061,7 +1384,11 @@ def test_folder_upload_waits_for_running_puts_and_persists_their_success_after_p
     )
 
     with pytest.raises(RuntimeError, match="one PUT failed"):
-        upload_dataset(args, api="https://avia.eurekailab.com/api/v1", token="token")
+        _upload_via_canonical_path(
+            args,
+            api="https://avia.eurekailab.com/api/v1",
+            token="token",
+        )
 
     assert success_finished.is_set(), "upload returned while a sibling PUT still mutated storage"
     assert len(probe_routes) == 1
@@ -1112,7 +1439,11 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._create_dataset_session",
-        lambda **_kwargs: {"import_id": "imp_stream_failure"},
+        lambda **kwargs: _pending_session_response(
+            project_id="proj_123456789abc",
+            import_id="imp_stream_failure",
+            request_payload=kwargs["payload"],
+        ),
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._batch_upload_urls",
@@ -1122,7 +1453,10 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
                     "relative_path": item["relative_path"],
                     "content_type": "application/octet-stream",
                     "upload_url": f"https://objects.example/{item['relative_path']}",
-                    "object_key": f"objects/{item['relative_path']}",
+                    "object_key": (
+                        "project_assets/ws_123/scope_123/imports/"
+                        f"imp_stream_failure/files/{item['relative_path']}"
+                    ),
                     "required_headers": {"Content-Type": "application/octet-stream"},
                 }
                 for item in kwargs["files"]
@@ -1131,7 +1465,7 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
     )
     monkeypatch.setattr(
         "avia_cli.core.uploads.dataset._put_file_with_retries",
-        lambda **_kwargs: None,
+        lambda **_kwargs: "version-1",
     )
     success_started = threading.Event()
     failure_released = threading.Event()
@@ -1156,7 +1490,11 @@ def test_folder_upload_drains_stream_completions_and_persists_success_after_peer
     )
 
     with pytest.raises(RuntimeError, match="one stream completion failed"):
-        upload_dataset(args, api="https://avia.eurekailab.com/api/v1", token="token")
+        _upload_via_canonical_path(
+            args,
+            api="https://avia.eurekailab.com/api/v1",
+            token="token",
+        )
 
     assert success_finished.is_set(), "upload returned while stream completion still ran"
     state_path = next(state_dir.rglob("*.json"))
@@ -1193,7 +1531,11 @@ def test_folder_upload_validates_dataset_before_auto_tuning_network_probe(
     )
 
     with pytest.raises(SystemExit, match="invalid_yolo_detect_row"):
-        upload_dataset(args, api="https://avia.example/api/v1", token="token")
+        _upload_via_canonical_path(
+            args,
+            api="https://avia.example/api/v1",
+            token="token",
+        )
 
 
 def test_folder_upload_rejects_class_override_for_non_yolo_before_scanning(
@@ -1222,7 +1564,38 @@ def test_folder_upload_rejects_class_override_for_non_yolo_before_scanning(
     )
 
     with pytest.raises(SystemExit, match="--class is only valid with --format yolo"):
-        upload_dataset(args, api="https://avia.example/api/v1", token="token")
+        _upload_via_canonical_path(
+            args,
+            api="https://avia.example/api/v1",
+            token="token",
+        )
+
+
+def test_prepare_dataset_upload_rejects_format_task_before_scanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _build_parser().parse_args(
+        [
+            "dataset",
+            "upload",
+            "--project",
+            "proj_123abc456def",
+            "--source",
+            str(tmp_path),
+            "--format",
+            "imagenet",
+            "--task-key",
+            "detect",
+        ]
+    )
+    monkeypatch.setattr(
+        "avia_cli.core.uploads.dataset.scan_source_manifest",
+        lambda *_args, **_kwargs: pytest.fail("invalid format/task reached dataset scan"),
+    )
+
+    with pytest.raises(SystemExit, match="does not support"):
+        prepare_dataset_upload(args)
 
 
 def test_folder_upload_emits_and_returns_segment_topology_warnings(
@@ -1268,7 +1641,11 @@ def test_folder_upload_emits_and_returns_segment_topology_warnings(
         lambda **_kwargs: {"status": "accepted"},
     )
 
-    result = upload_dataset(args, api="https://avia.example/api/v1", token="token")
+    result = _upload_via_canonical_path(
+        args,
+        api="https://avia.example/api/v1",
+        token="token",
+    )
 
     assert result["validation_warnings"][0]["code"] == "yolo_segment_topology"
     event = json.loads(capsys.readouterr().err)

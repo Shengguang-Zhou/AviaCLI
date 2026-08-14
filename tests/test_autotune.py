@@ -30,7 +30,7 @@ def test_detect_storage_kind_local_lan_wan() -> None:
     assert detect_storage_kind("::1") == "local"
     assert detect_storage_kind("0.0.0.0") == "local"
     assert detect_storage_kind("minio.internal.example.com") == "local"
-    assert detect_storage_kind("192.168.1.9") == "lan"
+    assert detect_storage_kind("192.168.1.13") == "lan"
     assert detect_storage_kind("10.0.0.5") == "lan"
     assert detect_storage_kind("172.16.5.4") == "lan"
     assert detect_storage_kind("172.31.255.1") == "lan"

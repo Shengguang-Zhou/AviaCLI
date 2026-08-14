@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from avia_cli.core.uploads.image_validation import decoded_image_size
-from avia_cli.core.uploads.manifest import is_client_state_path
+from avia_cli.core.uploads.manifest import is_client_state_directory
 
 _DOCUMENT_NAMES = {
     "LICENSE",
@@ -58,7 +58,7 @@ def dataset_role_directories(*, source_root: Path, role_root: Path) -> list[Path
     return sorted(
         path
         for path in role_root.iterdir()
-        if path.is_dir() and not is_client_state_path(path.relative_to(source_root))
+        if path.is_dir() and not is_client_state_directory(path.relative_to(source_root))
     )
 
 

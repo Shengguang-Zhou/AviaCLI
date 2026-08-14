@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
 
+from avia_cli.core.uploads.class_catalog import require_canonical_class_catalog
 from avia_cli.core.uploads.inventory import DatasetRoleInventory
 from avia_cli.core.uploads.metadata import read_yolo_metadata
 from avia_cli.core.uploads.validation_common import (
@@ -20,7 +22,8 @@ from avia_cli.core.uploads.validation_common import (
 )
 
 _YOLO_METADATA_NAMES = {"data.yaml", "data.yml", "dataset.yaml", "dataset.yml", "classes.txt"}
-_NORMALIZED_ROUNDING_TOLERANCE = 1e-6
+_NORMALIZED_ROUNDING_TOLERANCE = 0.75e-6
+_NORMALIZED_ROUNDING_FLOAT_SLACK = 4 * math.ulp(1.0)
 
 
 def validate_yolo(
@@ -38,7 +41,7 @@ def validate_yolo(
     except SystemExit as exc:
         metadata = {}
         errors.append(error("invalid_yolo_metadata", str(exc)))
-    metadata_classes = [str(name) for name in list(metadata.get("names") or [])]
+    metadata_classes = list(metadata.get("names") or [])
     classes = _resolve_classes(
         metadata_classes=metadata_classes,
         declared_classes=declared_classes,
@@ -138,28 +141,29 @@ def _resolve_classes(
 ) -> list[str]:
     if declared_classes is None:
         return metadata_classes
-    if (
-        not declared_classes
-        or any(not name or name != name.strip() for name in declared_classes)
-        or len(set(declared_classes)) != len(declared_classes)
-    ):
+    try:
+        canonical_declared_classes = require_canonical_class_catalog(
+            declared_classes,
+            label="--class values",
+        )
+    except ValueError as exc:
         errors.append(
             error(
                 "invalid_declared_class_names",
-                "--class values must be non-empty, unique, and have no surrounding whitespace",
+                str(exc),
             )
         )
         return []
-    if metadata_classes and declared_classes != metadata_classes:
+    if metadata_classes and canonical_declared_classes != metadata_classes:
         errors.append(
             error(
                 "conflicting_class_names",
                 "--class values must exactly match YOLO dataset metadata when both are present",
                 metadata_classes=metadata_classes,
-                declared_classes=declared_classes,
+                declared_classes=canonical_declared_classes,
             )
         )
-    return declared_classes
+    return canonical_declared_classes
 
 
 def _label_path_for_image(image_path: str) -> str:
@@ -336,11 +340,12 @@ def _validate_box(values: list[float]) -> str | None:
     if values[2] <= 0.0 or values[3] <= 0.0:
         return "box width and height must be positive"
     center_x, center_y, width, height = values
+    limit = _NORMALIZED_ROUNDING_TOLERANCE + _NORMALIZED_ROUNDING_FLOAT_SLACK
     if (
-        center_x - width / 2 < -_NORMALIZED_ROUNDING_TOLERANCE
-        or center_x + width / 2 > 1 + _NORMALIZED_ROUNDING_TOLERANCE
-        or center_y - height / 2 < -_NORMALIZED_ROUNDING_TOLERANCE
-        or center_y + height / 2 > 1 + _NORMALIZED_ROUNDING_TOLERANCE
+        center_x - width / 2 < -limit
+        or center_x + width / 2 > 1 + limit
+        or center_y - height / 2 < -limit
+        or center_y + height / 2 > 1 + limit
     ):
         return "box corners must fit inside normalized image bounds"
     return None
@@ -352,9 +357,10 @@ def _validate_pose(values: list[float], kpt_shape: object) -> str | None:
         or len(kpt_shape) != 2
         or any(isinstance(value, bool) or not isinstance(value, int) for value in kpt_shape)
         or int(kpt_shape[0]) <= 0
-        or int(kpt_shape[1]) not in {2, 3}
+        or int(kpt_shape[0]) > 2048
+        or int(kpt_shape[1]) != 3
     ):
-        return "pose metadata must declare exact kpt_shape=[K,D] with D equal to 2 or 3"
+        return "pose metadata must declare exact kpt_shape=[K,3] with 1 <= K <= 2048"
     keypoint_count, dimensions = int(kpt_shape[0]), int(kpt_shape[1])
     expected = 4 + keypoint_count * dimensions
     if len(values) != expected:
@@ -367,7 +373,7 @@ def _validate_pose(values: list[float], kpt_shape: object) -> str | None:
         x, y = keypoints[offset : offset + 2]
         if x < 0.0 or x > 1.0 or y < 0.0 or y > 1.0:
             return "keypoint x/y coordinates must be normalized to [0, 1]"
-        if dimensions == 3 and keypoints[offset + 2] not in {0.0, 1.0, 2.0}:
+        if keypoints[offset + 2] not in {0.0, 1.0, 2.0}:
             return "keypoint visibility must be exactly 0, 1, or 2"
     return None
 
@@ -378,12 +384,13 @@ def _validate_pose_metadata(kpt_shape: object, *, errors: list[dict[str, Any]]) 
         or len(kpt_shape) != 2
         or any(isinstance(value, bool) or not isinstance(value, int) for value in kpt_shape)
         or int(kpt_shape[0]) <= 0
-        or int(kpt_shape[1]) not in {2, 3}
+        or int(kpt_shape[0]) > 2048
+        or int(kpt_shape[1]) != 3
     ):
         errors.append(
             error(
                 "invalid_yolo_pose_metadata",
-                "pose datasets require exact kpt_shape=[K,D] metadata with D equal to 2 or 3",
+                "pose datasets require exact kpt_shape=[K,3] metadata with 1 <= K <= 2048",
             )
         )
 

@@ -7,7 +7,7 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib import error as urlerror, parse, request
 
 from avia_cli.core.errors import (
@@ -162,7 +162,11 @@ def _create_dataset_session(
         retries=3,
         label="dataset-session",
     )
-    return decode_dataset_session_response(response, project_id=project_id)
+    return decode_dataset_session_response(
+        response,
+        project_id=project_id,
+        request_payload=payload,
+    )
 
 
 def _batch_upload_urls(
@@ -172,6 +176,8 @@ def _batch_upload_urls(
     project_id: str,
     import_id: str,
     files: list[dict[str, object]],
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
     timeout: int | float = 60,
     retries: int = 3,
 ) -> dict[str, Any]:
@@ -195,6 +201,8 @@ def _batch_upload_urls(
         project_id=project_id,
         import_id=import_id,
         requested_files=files,
+        request_payload=request_payload,
+        session_response=session_response,
     )
 
 
@@ -205,6 +213,8 @@ def _complete_dataset_file_batch(
     project_id: str,
     import_id: str,
     files: list[dict[str, object]],
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
     timeout: int | float = 900,
     retries: int = 4,
 ) -> dict[str, Any]:
@@ -237,6 +247,8 @@ def _complete_dataset_file_batch(
                 project_id=project_id,
                 import_id=import_id,
                 requested_paths=[str(item.get("relative_path") or "") for item in files],
+                request_payload=request_payload,
+                session_response=session_response,
             )
         except Exception as exc:
             last_error = exc
@@ -276,8 +288,8 @@ def _put_file(
     headers: dict[str, object],
     connect_timeout: float = 15.0,
     read_timeout: float = _DEFAULT_UPLOAD_READ_TIMEOUT,
-) -> None:
-    _transfer_put_file_requests(
+) -> str:
+    return _transfer_put_file_requests(
         route=route,
         source=source,
         headers=headers,
@@ -297,8 +309,8 @@ def _put_file_with_retries(
     base_delay_sec: float,
     connect_timeout: float = 15.0,
     read_timeout: float = _DEFAULT_UPLOAD_READ_TIMEOUT,
-) -> None:
-    _retry_put_file(
+) -> str:
+    return _retry_put_file(
         put_file=_put_file,
         is_retryable=_is_retryable_upload_error,
         route=route,
@@ -312,7 +324,15 @@ def _put_file_with_retries(
     )
 
 
-def _complete_import(*, api: str, token: str, project_id: str, import_id: str) -> dict[str, Any]:
+def _complete_import(
+    *,
+    api: str,
+    token: str,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
+) -> dict[str, Any]:
     response = _request_json_with_retries(
         method="POST",
         url=_project_path(api, project_id, f"imports/{parse.quote(import_id, safe='')}/complete"),
@@ -322,7 +342,13 @@ def _complete_import(*, api: str, token: str, project_id: str, import_id: str) -
         retries=3,
         label="complete-import",
     )
-    return decode_complete_import_response(response, project_id=project_id, import_id=import_id)
+    return decode_complete_import_response(
+        response,
+        project_id=project_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        session_response=session_response,
+    )
 
 
 def _poll_import(
@@ -331,6 +357,8 @@ def _poll_import(
     token: str,
     project_id: str,
     import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
     timeout_sec: int,
     interval_sec: float,
 ) -> dict[str, Any]:
@@ -350,8 +378,14 @@ def _poll_import(
             retries=2,
             label="poll-import",
         )
-        last = decode_import_job_response(response, project_id=project_id, import_id=import_id)
-        status = str(last["status"])
+        last = decode_import_job_response(
+            response,
+            project_id=project_id,
+            import_id=import_id,
+            request_payload=request_payload,
+            session_response=session_response,
+        )
+        status = cast(str, last["status"])
         if status in IMPORT_TERMINAL_STATUSES:
             return last
         if time.monotonic() >= deadline:

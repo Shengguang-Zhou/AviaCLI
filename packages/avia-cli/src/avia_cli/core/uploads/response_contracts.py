@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+from dataclasses import dataclass
 from typing import Any
 
 from avia_cli.core.uploads.contracts import (
-    ANOMALIB_CLASSES,
+    require_folder_class_catalog,
     require_format_task,
+    require_object_prefix_class_catalog,
     require_object_prefix_uri,
 )
 from avia_cli.core.uploads.media_types import require_canonical_media_type
@@ -44,6 +48,90 @@ _BATCH_UPLOAD_URL_REQUEST_FILE_FIELDS = {
     "sha256",
     "size_bytes",
 }
+_DATASET_SESSION_REQUEST_FIELDS = {
+    "classes",
+    "file_count",
+    "format",
+    "idempotency_key",
+    "root_name",
+    "task_key",
+    "total_bytes",
+}
+_DATASET_MANIFEST_REF_FIELDS = {
+    "byte_count",
+    "format",
+    "id",
+    "item_count",
+    "storage",
+}
+_DATASET_MANIFEST_STORAGE_FIELDS = {
+    "dataset_version_id",
+    "kind",
+    "lakefs_commit",
+    "lakefs_repo",
+    "manifest_path",
+    "path_prefix",
+}
+_DATASET_MANIFEST_READ_LEASE_FIELDS = {
+    "access",
+    "dataset_manifest_ref_id",
+    "id",
+    "scope",
+}
+_DATASET_VERSION_REF_FIELDS = {
+    "byte_count",
+    "content_digest",
+    "dataset_version_id",
+    "item_count",
+    "lakefs_commit",
+    "lakefs_repo",
+    "lakefs_tag",
+    "manifest_path",
+    "path_prefix",
+    "storage_kind",
+}
+_DATASET_VERSION_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_CANONICAL_IMPORT_ID_RE = re.compile(r"imp_[A-Za-z0-9_-]+\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class _DatasetManifestStorageModel:
+    manifest_path: str
+    path_prefix: str
+    project_scope_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DatasetManifestRefModel:
+    ref_id: str
+    format_name: str
+    item_count: int
+    byte_count: int
+    storage: _DatasetManifestStorageModel
+
+
+@dataclass(frozen=True, slots=True)
+class _DatasetManifestReadLeaseModel:
+    lease_id: str
+    dataset_manifest_ref_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetSessionIdentity:
+    workspace_id: str
+    import_id: str
+    object_key: str
+    manifest_ref: _DatasetManifestRefModel
+    read_lease: _DatasetManifestReadLeaseModel
+
+
+@dataclass(frozen=True, slots=True)
+class ImportManifestIdentity:
+    workspace_id: str
+    project_scope_id: str
+    import_id: str
+    manifest_path: str
+    path_prefix: str
 
 
 def validate_source_import_request(payload: dict[str, object]) -> None:
@@ -52,27 +140,20 @@ def validate_source_import_request(payload: dict[str, object]) -> None:
         raise RuntimeError("source-import request source_kind must be object_prefix")
     try:
         require_object_prefix_uri(payload.get("uri"))
-        require_format_task(
-            format_name=str(payload.get("format")),
-            task_key=str(payload.get("task_key")),
+        format_name, _task_key = require_format_task(
+            format_name=payload.get("format"),
+            task_key=payload.get("task_key"),
         )
     except SystemExit as exc:
         raise RuntimeError(str(exc)) from exc
-    classes = payload.get("classes")
-    if (
-        not isinstance(classes, list)
-        or any(not isinstance(item, str) or not item or item != item.strip() for item in classes)
-        or len(set(classes)) != len(classes)
-    ):
-        raise RuntimeError("source-import request classes must be unique canonical strings")
-    format_name = payload.get("format")
-    if format_name == "anomalib":
-        if classes != list(ANOMALIB_CLASSES):
-            raise RuntimeError(
-                "anomalib source-import request classes must be exactly ['good', 'bad']"
-            )
-    elif format_name != "yolo" and classes:
-        raise RuntimeError("coco and imagenet source-import request classes must be empty")
+    try:
+        require_object_prefix_class_catalog(
+            payload.get("classes"),
+            format_name=format_name,
+            label="source-import request classes",
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     if not isinstance(payload.get("auto_post_processing"), bool):
         raise RuntimeError("source-import request auto_post_processing must be boolean")
 
@@ -96,11 +177,17 @@ def decode_source_import_response(
     if auto_post_processing:
         expected_fields.update({"dispatch_mode", "reason", "worker_task_id"})
     _require_exact_fields(payload, expected_fields, label="source-import response")
-    _require_identity(payload, project_id=project_id)
+    workspace_id, import_id = _require_identity(payload, project_id=project_id)
     expected_status = "queued" if auto_post_processing else "uploaded"
     if payload.get("status") != expected_status:
         raise RuntimeError(f"source-import status must be {expected_status}")
     object_key = _require_nonempty_string(payload, "object_key", label="source-import response")
+    parse_import_manifest_identity(
+        object_key,
+        import_id=import_id,
+        label="source-import response object_key",
+        expected_workspace_id=workspace_id,
+    )
     progress = payload.get("progress")
     if not isinstance(progress, dict):
         raise RuntimeError("source-import response progress must be an object")
@@ -127,7 +214,11 @@ def decode_source_import_response(
         raise RuntimeError(
             "source-import progress image_count and streamed must be zero before materialization"
         )
-    for key in ("source_version_id", "source_bucket", "source_etag"):
+    require_s3_version_id(
+        progress.get("source_version_id"),
+        label="source-import progress source_version_id",
+    )
+    for key in ("source_bucket", "source_etag"):
         _require_nonempty_string(progress, key, label="source-import progress")
     source_size_bytes = progress.get("source_size_bytes")
     if (
@@ -146,7 +237,26 @@ def decode_source_import_response(
     return payload
 
 
-def decode_dataset_session_response(payload: dict[str, Any], *, project_id: str) -> dict[str, Any]:
+def decode_dataset_session_response(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    request_payload: dict[str, object],
+) -> dict[str, Any]:
+    decode_dataset_session_identity(
+        payload,
+        project_id=project_id,
+        request_payload=request_payload,
+    )
+    return payload
+
+
+def decode_dataset_session_identity(
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    request_payload: dict[str, object],
+) -> DatasetSessionIdentity:
     _require_exact_fields(
         payload,
         {
@@ -160,13 +270,25 @@ def decode_dataset_session_response(payload: dict[str, Any], *, project_id: str)
         },
         label="dataset-session response",
     )
-    _require_identity(payload, project_id=project_id)
+    workspace_id, import_id = _require_identity(payload, project_id=project_id)
     if payload["status"] != "pending_upload":
         raise RuntimeError("dataset-session status must be pending_upload")
-    _require_nonempty_string(payload, "object_key", label="dataset-session response")
-    _require_object(payload, "dataset_manifest_ref", label="dataset-session response")
-    _require_object(payload, "read_lease", label="dataset-session response")
-    return payload
+    object_key = _require_nonempty_string(payload, "object_key", label="dataset-session response")
+    manifest_ref, read_lease = _decode_dataset_manifest_identity(
+        payload,
+        workspace_id=workspace_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        expected_object_key=object_key,
+        label="dataset-session response",
+    )
+    return DatasetSessionIdentity(
+        workspace_id=workspace_id,
+        import_id=import_id,
+        object_key=object_key,
+        manifest_ref=manifest_ref,
+        read_lease=read_lease,
+    )
 
 
 def decode_batch_upload_urls_response(
@@ -175,13 +297,27 @@ def decode_batch_upload_urls_response(
     project_id: str,
     import_id: str,
     requested_files: list[dict[str, object]],
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
 ) -> dict[str, Any]:
+    session_identity = _require_dataset_session_identity(
+        project_id=project_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        session_response=session_response,
+    )
     _require_exact_fields(
         payload,
         {"files", "import_id", "project_id", "workspace_id"},
         label="batch-upload-urls response",
     )
-    _require_identity(payload, project_id=project_id, import_id=import_id)
+    workspace_id, _response_import_id = _require_identity(
+        payload,
+        project_id=project_id,
+        import_id=import_id,
+    )
+    if workspace_id != session_identity.workspace_id:
+        raise RuntimeError("batch-upload-urls workspace_id does not match dataset session")
     raw_files = payload.get("files")
     if not isinstance(raw_files, list):
         raise RuntimeError("batch-upload-urls response files must be an array")
@@ -221,6 +357,13 @@ def decode_batch_upload_urls_response(
         if raw.get("sha256") != expected_sha:
             raise RuntimeError(f"batch-upload-urls sha256 mismatch for {relative_path}")
         object_key = _require_nonempty_string(raw, "object_key", label="batch-upload-urls file")
+        expected_object_key = (
+            f"{session_identity.manifest_ref.storage.path_prefix}/files/{relative_path}"
+        )
+        if object_key != expected_object_key:
+            raise RuntimeError(
+                f"batch-upload-urls object_key does not match dataset session for {relative_path}"
+            )
         upload_url = _require_nonempty_string(raw, "upload_url", label="batch-upload-urls file")
         if object_key in object_keys or upload_url in upload_urls:
             raise RuntimeError("batch-upload-urls remote object identities must be unique")
@@ -258,7 +401,15 @@ def decode_batch_complete_response(
     project_id: str,
     import_id: str,
     requested_paths: list[str],
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
 ) -> dict[str, Any]:
+    session_identity = _require_dataset_session_identity(
+        project_id=project_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        session_response=session_response,
+    )
     _require_exact_fields(
         payload,
         {
@@ -270,17 +421,36 @@ def decode_batch_complete_response(
         },
         label="batch-complete response",
     )
-    _require_identity(payload, project_id=project_id, import_id=import_id)
+    workspace_id, _response_import_id = _require_identity(
+        payload,
+        project_id=project_id,
+        import_id=import_id,
+    )
+    if workspace_id != session_identity.workspace_id:
+        raise RuntimeError("batch-complete workspace_id does not match dataset session")
     if payload.get("status") != "streaming_upload":
         raise RuntimeError("batch-complete status must be streaming_upload")
-    if payload.get("uploaded_files") != len(requested_paths):
+    uploaded_files = payload.get("uploaded_files")
+    if type(uploaded_files) is not int or uploaded_files != len(requested_paths):
         raise RuntimeError("batch-complete uploaded_files does not match the requested batch")
     return payload
 
 
 def decode_complete_import_response(
-    payload: dict[str, Any], *, project_id: str, import_id: str
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
 ) -> dict[str, Any]:
+    session_identity = decode_dataset_session_identity(
+        session_response,
+        project_id=project_id,
+        request_payload=request_payload,
+    )
+    if session_identity.import_id != import_id:
+        raise RuntimeError("complete-import session import_id does not match the request")
     _require_exact_fields(
         payload,
         {
@@ -296,11 +466,27 @@ def decode_complete_import_response(
         },
         label="complete-import response",
     )
-    _require_identity(payload, project_id=project_id, import_id=import_id)
+    workspace_id, _response_import_id = _require_identity(
+        payload,
+        project_id=project_id,
+        import_id=import_id,
+    )
+    if workspace_id != session_identity.workspace_id:
+        raise RuntimeError("complete-import workspace_id does not match dataset session")
     if payload.get("status") != "queued":
         raise RuntimeError("complete-import status must be queued")
-    _require_object(payload, "dataset_manifest_ref", label="complete-import response")
-    _require_object(payload, "read_lease", label="complete-import response")
+    manifest_ref, read_lease = _decode_dataset_manifest_identity(
+        payload,
+        workspace_id=workspace_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        expected_object_key=session_identity.object_key,
+        label="complete-import response",
+    )
+    if manifest_ref != session_identity.manifest_ref:
+        raise RuntimeError("complete-import dataset_manifest_ref changed after dataset session")
+    if read_lease != session_identity.read_lease:
+        raise RuntimeError("complete-import read_lease changed after dataset session")
     if payload.get("reason") != "queued":
         raise RuntimeError("complete-import reason must be queued")
     _require_nonempty_string(payload, "dispatch_mode", label="complete-import response")
@@ -308,12 +494,167 @@ def decode_complete_import_response(
     return payload
 
 
+def _decode_dataset_manifest_identity(
+    payload: dict[str, Any],
+    *,
+    workspace_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    expected_object_key: str | None,
+    label: str,
+) -> tuple[_DatasetManifestRefModel, _DatasetManifestReadLeaseModel]:
+    format_name, item_count, byte_count = _dataset_session_request_identity(request_payload)
+    expected_ref_id = f"dm_{import_id}"
+    expected_lease_id = f"lease_{import_id}"
+    raw_ref = _require_object(payload, "dataset_manifest_ref", label=label)
+    _require_exact_fields(
+        raw_ref, _DATASET_MANIFEST_REF_FIELDS, label=f"{label} dataset_manifest_ref"
+    )
+    if raw_ref.get("id") != expected_ref_id:
+        raise RuntimeError(f"{label} dataset_manifest_ref id does not match import_id")
+    if raw_ref.get("format") != format_name:
+        raise RuntimeError(f"{label} dataset_manifest_ref format does not match the request")
+    if type(raw_ref.get("item_count")) is not int or raw_ref.get("item_count") != item_count:
+        raise RuntimeError(f"{label} dataset_manifest_ref item_count does not match the request")
+    if type(raw_ref.get("byte_count")) is not int or raw_ref.get("byte_count") != byte_count:
+        raise RuntimeError(f"{label} dataset_manifest_ref byte_count does not match the request")
+    raw_storage = _require_object(raw_ref, "storage", label=f"{label} dataset_manifest_ref")
+    _require_exact_fields(
+        raw_storage,
+        _DATASET_MANIFEST_STORAGE_FIELDS,
+        label=f"{label} dataset_manifest_ref storage",
+    )
+    if raw_storage.get("kind") != "minio":
+        raise RuntimeError(f"{label} dataset_manifest_ref storage kind must be minio")
+    for field in ("lakefs_repo", "lakefs_commit", "dataset_version_id"):
+        if raw_storage.get(field) is not None:
+            raise RuntimeError(f"{label} dataset_manifest_ref storage {field} must be null")
+    manifest_identity = parse_import_manifest_identity(
+        raw_storage.get("manifest_path"),
+        import_id=import_id,
+        label=f"{label} dataset_manifest_ref storage manifest_path",
+        expected_workspace_id=workspace_id,
+    )
+    if raw_storage.get("path_prefix") != manifest_identity.path_prefix:
+        raise RuntimeError(f"{label} dataset_manifest_ref storage path_prefix is inconsistent")
+    if expected_object_key is not None and manifest_identity.manifest_path != expected_object_key:
+        raise RuntimeError(f"{label} object_key does not match dataset_manifest_ref storage")
+    ref = _DatasetManifestRefModel(
+        ref_id=expected_ref_id,
+        format_name=format_name,
+        item_count=item_count,
+        byte_count=byte_count,
+        storage=_DatasetManifestStorageModel(
+            manifest_path=manifest_identity.manifest_path,
+            path_prefix=manifest_identity.path_prefix,
+            project_scope_id=manifest_identity.project_scope_id,
+        ),
+    )
+
+    raw_lease = _require_object(payload, "read_lease", label=label)
+    _require_exact_fields(
+        raw_lease,
+        _DATASET_MANIFEST_READ_LEASE_FIELDS,
+        label=f"{label} read_lease",
+    )
+    expected_lease = {
+        "id": expected_lease_id,
+        "scope": "read",
+        "access": "object_ref",
+        "dataset_manifest_ref_id": expected_ref_id,
+    }
+    if raw_lease != expected_lease:
+        raise RuntimeError(f"{label} read_lease identity is inconsistent")
+    return ref, _DatasetManifestReadLeaseModel(
+        lease_id=expected_lease_id,
+        dataset_manifest_ref_id=expected_ref_id,
+    )
+
+
+def _dataset_session_request_identity(
+    payload: dict[str, object],
+) -> tuple[str, int, int]:
+    _require_exact_fields(payload, _DATASET_SESSION_REQUEST_FIELDS, label="dataset-session request")
+    for field in ("idempotency_key", "root_name"):
+        _require_nonempty_string(payload, field, label="dataset-session request")
+    try:
+        format_name, _task_key = require_format_task(
+            format_name=payload.get("format"),
+            task_key=payload.get("task_key"),
+        )
+        require_folder_class_catalog(
+            payload.get("classes"),
+            format_name=format_name,
+            label="dataset-session request classes",
+        )
+    except (SystemExit, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    counts: list[int] = []
+    for field in ("file_count", "total_bytes"):
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RuntimeError(f"dataset-session request {field} must be a positive integer")
+        counts.append(value)
+    return format_name, counts[0], counts[1]
+
+
+def parse_import_manifest_identity(
+    value: object,
+    *,
+    import_id: str,
+    label: str,
+    expected_workspace_id: str | None = None,
+) -> ImportManifestIdentity:
+    manifest_path = _require_canonical_object_path(
+        value,
+        label=label,
+    )
+    _import_target_dataset_version_id(
+        import_id,
+        label=label,
+    )
+    parts = manifest_path.split("/")
+    if (
+        len(parts) != 6
+        or parts[0] != "project_assets"
+        or parts[3] != "imports"
+        or parts[4] != import_id
+        or parts[5] != "manifest.json"
+    ):
+        raise RuntimeError(
+            f"{label} must be the exact project_assets workspace/scope import manifest"
+        )
+    workspace_id = parts[1]
+    project_scope_id = parts[2]
+    if expected_workspace_id is not None and workspace_id != expected_workspace_id:
+        raise RuntimeError(f"{label} must belong to the response workspace owner prefix")
+    return ImportManifestIdentity(
+        workspace_id=workspace_id,
+        project_scope_id=project_scope_id,
+        import_id=import_id,
+        manifest_path=manifest_path,
+        path_prefix="/".join(parts[:-1]),
+    )
+
+
 def decode_import_job_response(
-    payload: dict[str, Any], *, project_id: str, import_id: str
+    payload: dict[str, Any],
+    *,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
 ) -> dict[str, Any]:
+    session_identity = _require_dataset_session_identity(
+        project_id=project_id,
+        import_id=import_id,
+        request_payload=request_payload,
+        session_response=session_response,
+    )
     status = payload.get("status")
     if status not in IMPORT_STATUSES:
         raise RuntimeError(f"import-job response has unsupported status: {status!r}")
+    assert isinstance(status, str)
     base_fields = {
         "dataset_validation",
         "error",
@@ -329,7 +670,13 @@ def decode_import_job_response(
         base_fields | identity_fields if identity_fields.issubset(actual_fields) else base_fields
     )
     _require_exact_fields(payload, expected_fields, label="import-job response")
-    _require_identity(payload, project_id=project_id, import_id=import_id)
+    workspace_id, _response_import_id = _require_identity(
+        payload,
+        project_id=project_id,
+        import_id=import_id,
+    )
+    if workspace_id != session_identity.workspace_id:
+        raise RuntimeError("import-job workspace_id does not match dataset session")
     for key in ("progress", "error"):
         if not isinstance(payload.get(key), dict):
             raise RuntimeError(f"import-job response {key} must be an object")
@@ -338,8 +685,10 @@ def decode_import_job_response(
         raise RuntimeError("import-job response dataset_validation must be null or an object")
     validate_version_ref_phase(
         payload,
-        status=str(status),
+        status=status,
         label="import-job response",
+        import_id=session_identity.import_id,
+        project_scope_id=session_identity.manifest_ref.storage.project_scope_id,
     )
     return payload
 
@@ -349,6 +698,8 @@ def validate_version_ref_phase(
     *,
     status: str,
     label: str,
+    import_id: str,
+    project_scope_id: str,
 ) -> dict[str, Any] | None:
     has_dataset_version_id = "dataset_version_id" in payload
     has_version_ref = "version_ref" in payload
@@ -357,7 +708,12 @@ def validate_version_ref_phase(
             raise RuntimeError(
                 f"{label} succeeded status requires dataset_version_id and version_ref"
             )
-        return parse_version_ref_identity(payload, label=label)
+        return parse_version_ref_identity(
+            payload,
+            label=label,
+            import_id=import_id,
+            project_scope_id=project_scope_id,
+        )
     if has_dataset_version_id != has_version_ref:
         raise RuntimeError(f"{label} pre-published identity fields must both be absent or null")
     if has_dataset_version_id and (
@@ -373,14 +729,27 @@ def parse_version_ref_identity(
     payload: dict[str, Any],
     *,
     label: str,
+    import_id: str,
+    project_scope_id: str,
 ) -> dict[str, Any]:
-    dataset_version_id = _require_nonempty_string(payload, "dataset_version_id", label=label)
+    expected_dataset_version_id = _import_target_dataset_version_id(
+        import_id,
+        label=label,
+    )
+    clean_project_scope_id = _require_canonical_path_segment(
+        project_scope_id,
+        label=f"{label} project_scope_id",
+    )
+    dataset_version_id = _require_canonical_string(payload, "dataset_version_id", label=label)
+    if dataset_version_id != expected_dataset_version_id:
+        raise RuntimeError(f"{label} dataset_version_id does not match the import-derived identity")
     version_ref = _require_object(payload, "version_ref", label=label)
-    if "id" in version_ref:
-        raise RuntimeError(
-            f"{label} version_ref dataset_version_id is the sole identity field; id is invalid"
-        )
-    referenced_version_id = _require_nonempty_string(
+    _require_exact_fields(
+        version_ref,
+        _DATASET_VERSION_REF_FIELDS,
+        label=f"{label} version_ref",
+    )
+    referenced_version_id = _require_canonical_string(
         version_ref,
         "dataset_version_id",
         label=f"{label} version_ref",
@@ -389,7 +758,140 @@ def parse_version_ref_identity(
         raise RuntimeError(
             f"{label} version_ref dataset_version_id does not match dataset_version_id"
         )
+    item_count = _require_nonnegative_integer(
+        version_ref.get("item_count"),
+        label=f"{label} version_ref item_count",
+    )
+    byte_count = _require_nonnegative_integer(
+        version_ref.get("byte_count"),
+        label=f"{label} version_ref byte_count",
+    )
+    content_digest = version_ref.get("content_digest")
+    if (
+        not isinstance(content_digest, str)
+        or _DATASET_VERSION_DIGEST_RE.fullmatch(content_digest) is None
+    ):
+        raise RuntimeError(f"{label} version_ref content_digest must be canonical sha256")
+
+    storage_kind = version_ref.get("storage_kind")
+    if storage_kind != "minio_lakefs":
+        raise RuntimeError(f"{label} succeeded import version_ref must be materialized in lakeFS")
+    if item_count <= 0 or byte_count <= 0:
+        raise RuntimeError(f"{label} materialized version_ref counts must be positive")
+    _require_canonical_string(version_ref, "lakefs_repo", label=f"{label} version_ref")
+    _require_canonical_string(
+        version_ref,
+        "lakefs_commit",
+        label=f"{label} version_ref",
+    )
+    lakefs_tag = _require_canonical_string(
+        version_ref,
+        "lakefs_tag",
+        label=f"{label} version_ref",
+    )
+    path_prefix = _require_canonical_object_path(
+        version_ref.get("path_prefix"),
+        label=f"{label} version_ref path_prefix",
+    )
+    manifest_path = _require_canonical_object_path(
+        version_ref.get("manifest_path"),
+        label=f"{label} version_ref manifest_path",
+    )
+    if lakefs_tag != dataset_version_id:
+        raise RuntimeError(f"{label} version_ref lakefs_tag does not match dataset_version_id")
+    expected_path_prefix = f"dataset-manifests/{clean_project_scope_id}/{dataset_version_id}"
+    if path_prefix != expected_path_prefix:
+        raise RuntimeError(
+            f"{label} version_ref path_prefix does not match project_scope_id and dataset_version_id"
+        )
+    if manifest_path != f"{path_prefix}/manifest.json":
+        raise RuntimeError(f"{label} version_ref manifest_path does not match path_prefix")
     return version_ref
+
+
+def _import_target_dataset_version_id(import_id: object, *, label: str) -> str:
+    clean_import_id = require_canonical_import_id(import_id, label=f"{label} import_id")
+    return f"dsv_{clean_import_id.removeprefix('imp_')}"
+
+
+def require_canonical_import_id(value: object, *, label: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) > 64
+        or _CANONICAL_IMPORT_ID_RE.fullmatch(value) is None
+    ):
+        raise RuntimeError(
+            f"{label} must be one canonical imp_ path component of 5..64 ASCII characters "
+            "using letters, digits, underscore, or hyphen"
+        )
+    return value
+
+
+def require_s3_version_id(value: object, *, label: str) -> str:
+    if type(value) is not str:
+        raise RuntimeError(f"{label} must be an exact string")
+    if value == "null":
+        raise RuntimeError(f"{label} must not be the exact S3 null version sentinel")
+    try:
+        encoded = value.encode("utf-8", "strict")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(f"{label} must be valid UTF-8") from exc
+    if not 1 <= len(encoded) <= 1024:
+        raise RuntimeError(f"{label} must contain between 1 and 1024 UTF-8 bytes")
+    return value
+
+
+def _require_canonical_path_segment(value: object, *, label: str) -> str:
+    segment = _require_canonical_object_path(value, label=label)
+    if "/" in segment:
+        raise RuntimeError(f"{label} must be one canonical path segment")
+    return segment
+
+
+def _require_dataset_session_identity(
+    *,
+    project_id: str,
+    import_id: str,
+    request_payload: dict[str, object],
+    session_response: dict[str, Any],
+) -> DatasetSessionIdentity:
+    session_identity = decode_dataset_session_identity(
+        session_response,
+        project_id=project_id,
+        request_payload=request_payload,
+    )
+    if session_identity.import_id != import_id:
+        raise RuntimeError("dataset session import_id does not match the request")
+    return session_identity
+
+
+def _require_nonnegative_integer(value: object, *, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RuntimeError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _require_canonical_object_path(value: object, *, label: str) -> str:
+    path = _require_nonempty_string({"path": value}, "path", label=label)
+    if (
+        path.startswith("/")
+        or path.endswith("/")
+        or "\\" in path
+        or path != unicodedata.normalize("NFC", path)
+        or any(unicodedata.category(character) == "Cc" for character in path)
+        or any(part in {"", ".", ".."} or part != part.strip() for part in path.split("/"))
+    ):
+        raise RuntimeError(f"{label} must be a canonical relative object path")
+    return path
+
+
+def _require_canonical_string(payload: dict[str, Any], key: str, *, label: str) -> str:
+    value = _require_nonempty_string(payload, key, label=label)
+    if value != unicodedata.normalize("NFC", value) or any(
+        unicodedata.category(character) == "Cc" for character in value
+    ):
+        raise RuntimeError(f"{label} {key} must be canonical NFC text")
+    return value
 
 
 def _unique_requested_files(
@@ -404,10 +906,9 @@ def _unique_requested_files(
             _BATCH_UPLOAD_URL_REQUEST_FILE_FIELDS,
             label="batch-upload-urls request file",
         )
-        relative_path = _require_nonempty_string(
-            item,
-            "relative_path",
-            label="batch-upload-urls request file",
+        relative_path = _require_canonical_object_path(
+            item.get("relative_path"),
+            label="batch-upload-urls request file relative_path",
         )
         if relative_path in result:
             raise RuntimeError("batch-upload-urls request paths must be unique and non-empty")
@@ -461,13 +962,17 @@ def _require_signed_content_type_header(
 
 def _require_identity(
     payload: dict[str, Any], *, project_id: str, import_id: str | None = None
-) -> None:
+) -> tuple[str, str]:
     if payload.get("project_id") != project_id:
         raise RuntimeError("upload response project_id does not match the request")
-    _require_nonempty_string(payload, "workspace_id", label="upload response")
-    response_import_id = _require_nonempty_string(payload, "import_id", label="upload response")
+    workspace_id = _require_nonempty_string(payload, "workspace_id", label="upload response")
+    response_import_id = require_canonical_import_id(
+        payload.get("import_id"),
+        label="upload response import_id",
+    )
     if import_id is not None and response_import_id != import_id:
         raise RuntimeError("upload response import_id does not match the request")
+    return workspace_id, response_import_id
 
 
 def _require_exact_fields(payload: dict[str, Any], expected: set[str], *, label: str) -> None:

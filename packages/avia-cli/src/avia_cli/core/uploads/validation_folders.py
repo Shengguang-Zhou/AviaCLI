@@ -8,7 +8,10 @@ from PIL import Image
 
 from avia_cli.core.uploads.contracts import ANOMALIB_CLASSES
 from avia_cli.core.uploads.inventory import DatasetRoleInventory
-from avia_cli.core.uploads.manifest import is_client_state_path
+from avia_cli.core.uploads.manifest import (
+    is_client_state_directory,
+    is_client_state_path,
+)
 from avia_cli.core.uploads.validation_common import (
     dataset_role_directories,
     error,
@@ -44,11 +47,10 @@ def validate_imagenet(
     inventory: DatasetRoleInventory,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[dict[str, Any]] = []
-    train_root = source_root / "train"
-    classes = [
-        path.name
-        for path in dataset_role_directories(source_root=source_root, role_root=train_root)
-    ]
+    classes, classes_by_split, images_by_class = _parse_imagenet_catalog(
+        source_root=source_root,
+        inventory=inventory,
+    )
     if not classes:
         return [], [
             error(
@@ -56,21 +58,11 @@ def validate_imagenet(
             )
         ]
     expected = set(classes)
-    images_by_class = _index_imagenet_images(
-        source_root=source_root,
-        image_paths=inventory.image_paths,
-    )
     for split in ("train", "val", "test"):
         split_root = source_root / split
         if not split_root.exists():
             continue
-        actual = {
-            path.name
-            for path in dataset_role_directories(
-                source_root=source_root,
-                role_root=split_root,
-            )
-        }
+        actual = classes_by_split[split]
         if actual != expected:
             errors.append(
                 error(
@@ -104,6 +96,48 @@ def validate_imagenet(
         errors=errors,
     )
     return classes, errors
+
+
+def inspect_imagenet_class_catalog(
+    source_root: Path,
+    *,
+    inventory: DatasetRoleInventory,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    classes, _classes_by_split, _images_by_class = _parse_imagenet_catalog(
+        source_root=source_root,
+        inventory=inventory,
+    )
+    if classes:
+        return classes, []
+    return [], [
+        error("missing_imagenet_train_classes", "ImageNet train/<class> directories are required")
+    ]
+
+
+def _parse_imagenet_catalog(
+    *,
+    source_root: Path,
+    inventory: DatasetRoleInventory,
+) -> tuple[
+    list[str],
+    dict[str, set[str]],
+    dict[tuple[str, str], list[Path]],
+]:
+    classes_by_split = {
+        split: {
+            path.name
+            for path in dataset_role_directories(
+                source_root=source_root,
+                role_root=source_root / split,
+            )
+        }
+        for split in ("train", "val", "test")
+    }
+    images_by_class = _index_imagenet_images(
+        source_root=source_root,
+        image_paths=inventory.image_paths,
+    )
+    return sorted(classes_by_split["train"]), classes_by_split, images_by_class
 
 
 def _index_imagenet_images(
@@ -222,7 +256,7 @@ def _validate_anomalib_directories(
     actual = {
         path.relative_to(source_root).as_posix()
         for path in source_root.rglob("*")
-        if path.is_dir() and not is_client_state_path(path.relative_to(source_root))
+        if path.is_dir() and not is_client_state_directory(path.relative_to(source_root))
     }
     for relative in sorted(_ANOMALIB_DIRECTORIES - actual):
         errors.append(
