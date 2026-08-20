@@ -118,7 +118,7 @@ def put_file_requests(
     upload_error: type[RuntimeError],
     connect_timeout: float,
     read_timeout: float,
-) -> None:
+) -> str:
     import requests
 
     expected_length = int(source.identity["size_bytes"])
@@ -175,3 +175,7 @@ def put_file_requests(
             reason=str(resp.reason or ""),
             detail=resp.text[:500],
         )
+    version_id = str(resp.headers.get("x-amz-version-id") or "").strip()
+    if not version_id or version_id == "null":
+        raise RuntimeError("folder PUT response did not include an S3 VersionId")
+    return version_id

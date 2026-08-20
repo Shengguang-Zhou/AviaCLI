@@ -540,6 +540,7 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "reason": "queued",
         "dispatch_mode": "celery",
         "worker_task_id": "task_123",
+        "progress": {"phase": "queued"},
     }
     assert decode_complete_import_response(complete, project_id=PROJECT_ID, import_id=IMPORT_ID)
     job = {

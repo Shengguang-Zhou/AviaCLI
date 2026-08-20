@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 import requests
@@ -23,6 +24,7 @@ class _Response:
     status_code = 200
     reason = "OK"
     text = ""
+    headers: ClassVar[dict[str, str]] = {"x-amz-version-id": "version-id"}
 
 
 class _Session:
@@ -176,6 +178,7 @@ def test_folder_put_never_reloads_environment_after_route_resolution(
         response = requests.Response()
         response.status_code = 200
         response.reason = "OK"
+        response.headers["x-amz-version-id"] = "version-id"
         response._content = b""
         response._content_consumed = True
         return response

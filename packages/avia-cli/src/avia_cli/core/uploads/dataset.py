@@ -423,6 +423,7 @@ def _upload_validated_dataset(
                     "height": int(item.get("height") or 0),
                     "content_type": None,
                     "object_key": None,
+                    "version_id": None,
                     "source_identity": dict(source_identities[str(item["relative_path"])]),
                 }
                 for item in files
@@ -485,6 +486,7 @@ def _upload_validated_dataset(
                 "size_bytes": state_item["size_bytes"],
                 "content_type": state_item["content_type"],
                 "sha256": state_item["sha256"],
+                "version_id": state_item["version_id"],
             }
             if state_item["width"]:
                 item["width"] = state_item["width"]
@@ -681,7 +683,7 @@ def _upload_validated_dataset(
                     raise RuntimeError(f"upload URL missing for {relative_path}")
                 source_file = source_root / relative_path
                 headers = dict(signed.get("required_headers") or {})
-                upload_timing.time_call(
+                version_id = upload_timing.time_call(
                     "file_put",
                     _put_file_with_retries,
                     file_count=1,
@@ -695,7 +697,7 @@ def _upload_validated_dataset(
                     connect_timeout=float(args.upload_connect_timeout),
                     read_timeout=float(args.upload_read_timeout),
                 )
-                return relative_path, signed
+                return relative_path, signed, version_id
 
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=int(args.concurrency or 1))
             futures = {
@@ -714,7 +716,7 @@ def _upload_validated_dataset(
                     if future.cancelled():
                         continue
                     try:
-                        relative_path, signed = future.result()
+                        relative_path, signed, version_id = future.result()
                     except Exception as exc:
                         put_failures.append(("file-put", [futures[future]], exc))
                         if len(put_failures) == 1:
@@ -727,6 +729,7 @@ def _upload_validated_dataset(
                             "uploaded": True,
                             "object_key": signed.get("object_key"),
                             "content_type": signed.get("content_type"),
+                            "version_id": version_id,
                             "sha256": str(file_by_relative[relative_path].get("sha256") or ""),
                             "size_bytes": int(
                                 file_by_relative[relative_path].get("size_bytes") or 0

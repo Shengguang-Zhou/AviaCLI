@@ -288,6 +288,7 @@ def decode_complete_import_response(
             "dispatch_mode",
             "import_id",
             "project_id",
+            "progress",
             "read_lease",
             "reason",
             "status",
@@ -300,6 +301,7 @@ def decode_complete_import_response(
     if payload.get("status") != "queued":
         raise RuntimeError("complete-import status must be queued")
     _require_object(payload, "dataset_manifest_ref", label="complete-import response")
+    _require_object(payload, "progress", label="complete-import response")
     _require_object(payload, "read_lease", label="complete-import response")
     if payload.get("reason") != "queued":
         raise RuntimeError("complete-import reason must be queued")

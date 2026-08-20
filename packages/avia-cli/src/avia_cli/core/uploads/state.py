@@ -54,6 +54,7 @@ _STATE_FILE_FIELDS = {
     "source_identity",
     "streamed",
     "uploaded",
+    "version_id",
     "width",
 }
 
@@ -424,6 +425,14 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
             not isinstance(raw.get("object_key"), str) or not raw.get("object_key")
         ):
             raise ValueError(f"state file object_key is invalid: {relative_path}")
+        version_id = raw.get("version_id")
+        if version_id is not None and (
+            not isinstance(version_id, str)
+            or not version_id
+            or version_id != version_id.strip()
+            or version_id == "null"
+        ):
+            raise ValueError(f"state file version_id is invalid: {relative_path}")
         content_type = raw.get("content_type")
         if content_type is not None:
             try:
@@ -450,7 +459,10 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
         if identity["size_bytes"] != raw["size_bytes"]:
             raise ValueError(f"state file source identity size mismatch: {relative_path}")
         if raw["uploaded"] and (
-            not sha256 or raw.get("object_key") is None or content_type is None
+            not sha256
+            or raw.get("object_key") is None
+            or content_type is None
+            or version_id is None
         ):
             raise ValueError(f"uploaded state file lacks remote identity: {relative_path}")
         if not raw["uploaded"] and (raw.get("object_key") is not None or content_type is not None):
