@@ -538,6 +538,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "import_id": "imp_done",
                     "status": "queued",
                     "dataset_manifest_ref": {"id": "dm_123"},
+                    "progress": {"phase": "queued"},
                     "read_lease": {"id": "lease_123"},
                     "reason": "queued",
                     "dispatch_mode": "celery",
@@ -553,6 +554,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                         "height": 0,
                         "content_type": "text/plain",
                         "object_key": "imports/imp_done/classes.txt",
+                        "version_id": "version-classes-1",
                         "source_identity": {
                             "device": 1,
                             "inode": 1,
