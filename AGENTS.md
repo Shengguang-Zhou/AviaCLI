@@ -82,6 +82,9 @@ same change whenever the upload protocol, validation boundary, packaging, or CI 
 - API bases, server response fields, import identifiers, remote object identities, and import
   statuses have one canonical contract. Reject unknown fields, duplicate/missing signed entries,
   mismatches, redirects, and historical status aliases.
+- Every import-job poll response requires one canonical `job_type`: `yolo_folder`,
+  `coco_folder`, `imagenet_folder`, or `anomalib_folder`. Missing values, historical dotted names,
+  format aliases, and unknown folder types are protocol errors.
 - `POST /projects/{project_id}/imports/{import_id}/complete` has one
   `avia.import-complete-queued/v1` response. A retry after response loss must decode the exact same
   persisted queued receipt, including non-empty `dispatch_mode` and `worker_task_id`; the client
