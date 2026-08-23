@@ -12,6 +12,7 @@ from avia_cli.core.uploads.api import _complete_dataset_file_batch
 from avia_cli.core.uploads.dataset import create_source_import
 from avia_cli.core.uploads.refs import attach_upload_refs
 from avia_cli.core.uploads.response_contracts import (
+    IMPORT_JOB_TYPES,
     IMPORT_STATUSES,
     decode_batch_complete_response,
     decode_batch_upload_urls_response,
@@ -547,6 +548,7 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
+        "job_type": "yolo_folder",
         "status": "succeeded",
         "progress": {"phase": "succeeded"},
         "error": {},
@@ -560,6 +562,47 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
             decode_import_job_response(
                 {**job, "status": alias}, project_id=PROJECT_ID, import_id=IMPORT_ID
             )
+
+
+@pytest.mark.parametrize("job_type", sorted(IMPORT_JOB_TYPES))
+def test_import_job_requires_one_current_folder_job_type(job_type: str) -> None:
+    job = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "job_type": job_type,
+        "status": "running",
+        "progress": {"phase": "running"},
+        "error": {},
+        "dataset_validation": None,
+    }
+
+    assert decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID) is job
+
+
+@pytest.mark.parametrize(
+    "job_type",
+    [None, "", " yolo_folder", "dataset.import.yolo", "yolo", "unknown_folder"],
+)
+def test_import_job_rejects_missing_legacy_or_unknown_job_type(job_type: object) -> None:
+    job = {
+        "workspace_id": "ws_123",
+        "project_id": PROJECT_ID,
+        "import_id": IMPORT_ID,
+        "job_type": job_type,
+        "status": "running",
+        "progress": {"phase": "running"},
+        "error": {},
+        "dataset_validation": None,
+    }
+
+    if job_type is None:
+        job.pop("job_type")
+        message = "fields must be exact"
+    else:
+        message = "unsupported job_type"
+    with pytest.raises(RuntimeError, match=message):
+        decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID)
 
 
 @pytest.mark.parametrize(
@@ -604,6 +647,7 @@ def test_prepublication_import_job_accepts_only_absent_or_null_version_identity(
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
+        "job_type": "yolo_folder",
         "status": status,
         "progress": {"phase": status},
         "error": {},
@@ -621,6 +665,7 @@ def test_prepublication_import_job_rejects_product_version_identity(status: str)
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
+        "job_type": "yolo_folder",
         "status": status,
         "progress": {"phase": status},
         "error": {},
@@ -646,6 +691,7 @@ def test_succeeded_import_job_requires_usable_result_references(field: str, valu
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
+        "job_type": "yolo_folder",
         "status": "succeeded",
         "progress": {"phase": "succeeded"},
         "error": {},
@@ -664,6 +710,7 @@ def test_succeeded_import_job_rejects_conflicting_version_reference_identity() -
         "workspace_id": "ws_123",
         "project_id": PROJECT_ID,
         "import_id": IMPORT_ID,
+        "job_type": "yolo_folder",
         "status": "succeeded",
         "progress": {"phase": "succeeded"},
         "error": {},

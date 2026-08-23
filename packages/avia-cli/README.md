@@ -140,6 +140,8 @@ images with the same dimensions as their defect image.
 API bases are canonical absolute `http(s)` URLs without credentials, queries, fragments,
 whitespace, default ports, or trailing slashes. Session, signed-URL, batch-complete, finalization,
 and poll responses use exact field and status decoders; historical aliases are rejected.
+Every import-job poll also requires exactly one current `job_type`: `yolo_folder`, `coco_folder`,
+`imagenet_folder`, or `anomalib_folder`; the field is never optional or inferred from format.
 Object-prefix imports bind classes to the selected format: YOLO uses the validated `--class`
 values, Anomalib/AD automatically sends the sole `["good", "bad"]` taxonomy, and COCO/ImageNet
 send no classes. `--class` is rejected for every non-YOLO format. A successful source-import

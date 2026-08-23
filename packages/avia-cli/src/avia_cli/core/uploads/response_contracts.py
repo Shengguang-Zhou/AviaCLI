@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, cast
 
 from avia_cli.core.uploads.contracts import (
     ANOMALIB_CLASSES,
@@ -12,6 +12,15 @@ from avia_cli.core.uploads.media_types import require_canonical_media_type
 IMPORT_ACTIVE_STATUSES = frozenset({"pending_upload", "uploaded", "queued", "running"})
 IMPORT_TERMINAL_STATUSES = frozenset({"succeeded", "failed"})
 IMPORT_STATUSES = IMPORT_ACTIVE_STATUSES | IMPORT_TERMINAL_STATUSES
+ImportJobType = Literal[
+    "yolo_folder",
+    "coco_folder",
+    "imagenet_folder",
+    "anomalib_folder",
+]
+IMPORT_JOB_TYPES: frozenset[ImportJobType] = frozenset(
+    {"yolo_folder", "coco_folder", "imagenet_folder", "anomalib_folder"}
+)
 
 _SOURCE_IMPORT_PROGRESS_FIELDS = {
     "classes",
@@ -320,6 +329,7 @@ def decode_import_job_response(
         "dataset_validation",
         "error",
         "import_id",
+        "job_type",
         "progress",
         "project_id",
         "status",
@@ -332,6 +342,7 @@ def decode_import_job_response(
     )
     _require_exact_fields(payload, expected_fields, label="import-job response")
     _require_identity(payload, project_id=project_id, import_id=import_id)
+    _require_import_job_type(payload.get("job_type"))
     for key in ("progress", "error"):
         if not isinstance(payload.get(key), dict):
             raise RuntimeError(f"import-job response {key} must be an object")
@@ -344,6 +355,12 @@ def decode_import_job_response(
         label="import-job response",
     )
     return payload
+
+
+def _require_import_job_type(value: object) -> ImportJobType:
+    if not isinstance(value, str) or value not in IMPORT_JOB_TYPES:
+        raise RuntimeError(f"import-job response has unsupported job_type: {value!r}")
+    return cast(ImportJobType, value)
 
 
 def validate_version_ref_phase(
