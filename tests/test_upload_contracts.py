@@ -48,7 +48,7 @@ def _write_state(
                     "idempotency_key": idempotency_key,
                     "format": "yolo",
                     "root_name": "coco8",
-                    "task_key": task_key,
+                    "task_keys": [task_key],
                     "classes": ["aircraft"],
                     "file_count": 1,
                     "total_bytes": 1,
@@ -580,7 +580,7 @@ def test_folder_upload_persists_pending_uuid_session_before_first_post_and_resum
         "idempotency_key",
         "format",
         "root_name",
-        "task_key",
+        "task_keys",
         "classes",
         "file_count",
         "total_bytes",
@@ -977,7 +977,7 @@ def test_anomalib_folder_upload_uses_binary_taxonomy_in_session_payload(
     assert len(seen_payloads) == 2
     assert seen_payloads[0] == seen_payloads[1]
     assert seen_payloads[0]["format"] == "anomalib"
-    assert seen_payloads[0]["task_key"] == "ad"
+    assert seen_payloads[0]["task_keys"] == ["ad"]
     assert seen_payloads[0]["classes"] == ["good", "bad"]
 
 
