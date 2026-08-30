@@ -552,7 +552,6 @@ def test_complete_and_poll_decoders_reject_historical_status_aliases() -> None:
         "status": "succeeded",
         "progress": {"phase": "succeeded"},
         "error": {},
-        "dataset_validation": None,
         "dataset_version_id": "dv_123",
         "version_ref": {"dataset_version_id": "dv_123"},
     }
@@ -574,7 +573,6 @@ def test_import_job_requires_one_current_folder_job_type(job_type: str) -> None:
         "status": "running",
         "progress": {"phase": "running"},
         "error": {},
-        "dataset_validation": None,
     }
 
     assert decode_import_job_response(job, project_id=PROJECT_ID, import_id=IMPORT_ID) is job
@@ -593,7 +591,6 @@ def test_import_job_rejects_missing_legacy_or_unknown_job_type(job_type: object)
         "status": "running",
         "progress": {"phase": "running"},
         "error": {},
-        "dataset_validation": None,
     }
 
     if job_type is None:
@@ -651,7 +648,6 @@ def test_prepublication_import_job_accepts_only_absent_or_null_version_identity(
         "status": status,
         "progress": {"phase": status},
         "error": {},
-        "dataset_validation": None,
     }
     if identity_mode == "null":
         job.update({"dataset_version_id": None, "version_ref": None})
@@ -669,7 +665,6 @@ def test_prepublication_import_job_rejects_product_version_identity(status: str)
         "status": status,
         "progress": {"phase": status},
         "error": {},
-        "dataset_validation": None,
         "dataset_version_id": "dv_123",
         "version_ref": {"dataset_version_id": "dv_123"},
     }
@@ -683,7 +678,6 @@ def test_prepublication_import_job_rejects_product_version_identity(status: str)
     [
         ("dataset_version_id", ""),
         ("version_ref", None),
-        ("dataset_validation", "not-an-object"),
     ],
 )
 def test_succeeded_import_job_requires_usable_result_references(field: str, value: object) -> None:
@@ -695,7 +689,6 @@ def test_succeeded_import_job_requires_usable_result_references(field: str, valu
         "status": "succeeded",
         "progress": {"phase": "succeeded"},
         "error": {},
-        "dataset_validation": None,
         "dataset_version_id": "dv_123",
         "version_ref": {"dataset_version_id": "dv_123"},
     }
@@ -714,7 +707,6 @@ def test_succeeded_import_job_rejects_conflicting_version_reference_identity() -
         "status": "succeeded",
         "progress": {"phase": "succeeded"},
         "error": {},
-        "dataset_validation": None,
         "dataset_version_id": "dv_123",
         "version_ref": {"dataset_version_id": "dv_other"},
     }

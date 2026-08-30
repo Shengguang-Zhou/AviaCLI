@@ -21,7 +21,6 @@ from avia_cli.core.uploads.validation import validate_dataset
 _TERMINAL_STATUSES = {"succeeded", "failed"}
 _INGESTION_JOB_BASE_FIELDS = {
     "created_at",
-    "dataset_validation",
     "error",
     "import_id",
     "job_type",
@@ -265,9 +264,6 @@ def _validate_server_import(item: dict[str, Any]) -> None:
     for key in ("progress", "error"):
         if not isinstance(item.get(key), dict):
             raise RuntimeError(f"ingestion-jobs entry {key} must be an object")
-    dataset_validation = item.get("dataset_validation")
-    if dataset_validation is not None and not isinstance(dataset_validation, dict):
-        raise RuntimeError("ingestion-jobs entry dataset_validation must be null or an object")
     status = item.get("status")
     if status not in IMPORT_STATUSES:
         raise RuntimeError(f"ingestion-jobs entry has unsupported status: {status!r}")
