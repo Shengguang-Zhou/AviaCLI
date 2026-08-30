@@ -326,7 +326,6 @@ def decode_import_job_response(
     if status not in IMPORT_STATUSES:
         raise RuntimeError(f"import-job response has unsupported status: {status!r}")
     base_fields = {
-        "dataset_validation",
         "error",
         "import_id",
         "job_type",
@@ -346,9 +345,6 @@ def decode_import_job_response(
     for key in ("progress", "error"):
         if not isinstance(payload.get(key), dict):
             raise RuntimeError(f"import-job response {key} must be an object")
-    dataset_validation = payload.get("dataset_validation")
-    if dataset_validation is not None and not isinstance(dataset_validation, dict):
-        raise RuntimeError("import-job response dataset_validation must be null or an object")
     validate_version_ref_phase(
         payload,
         status=str(status),
