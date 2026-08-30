@@ -861,7 +861,7 @@ def _dataset_session_payload(
         "idempotency_key": idempotency_key,
         "format": str(args.format),
         "root_name": Path(str(manifest["source"])).name,
-        "task_key": str(args.task_key),
+        "task_keys": [str(args.task_key)],
         "classes": classes,
         "file_count": int(manifest["file_count"]),
         "total_bytes": int(manifest["total_bytes"]),

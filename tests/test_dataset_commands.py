@@ -527,7 +527,7 @@ def test_cleanup_plan_uses_yolotaskcv_api_and_local_state(
                     "idempotency_key": idempotency_key,
                     "format": "yolo",
                     "root_name": "dataset",
-                    "task_key": "detect",
+                    "task_keys": ["detect"],
                     "classes": ["aircraft"],
                     "file_count": 1,
                     "total_bytes": 1,

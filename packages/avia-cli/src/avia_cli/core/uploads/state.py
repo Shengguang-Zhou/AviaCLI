@@ -26,7 +26,7 @@ _SESSION_PAYLOAD_FIELDS = {
     "idempotency_key",
     "format",
     "root_name",
-    "task_key",
+    "task_keys",
     "classes",
     "file_count",
     "total_bytes",
@@ -383,10 +383,12 @@ def _validate_state(state: dict[str, Any], *, path: Path) -> None:
             )
         except RuntimeError as exc:
             raise ValueError(f"completed state response is invalid: {exc}") from exc
-    for key in ("format", "root_name", "task_key"):
+    for key in ("format", "root_name"):
         value = session_payload.get(key)
         if not isinstance(value, str) or not value or value != value.strip():
             raise ValueError(f"session_payload {key} must be canonical")
+    if session_payload.get("task_keys") != [state["task_key"]]:
+        raise ValueError("session_payload task_keys must match the selected task")
     classes = session_payload.get("classes")
     if (
         not isinstance(classes, list)
