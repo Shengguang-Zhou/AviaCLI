@@ -131,12 +131,13 @@ def put_file_requests(
         raise ValueError("upload timeouts must be greater than zero")
     request_headers = _validated_upload_headers(headers, expected_length=expected_length)
     handle = source.prepare()
+    request_body = b"" if expected_length == 0 else handle
     try:
         with requests.Session() as session:
             session.trust_env = False
             resp = session.put(
                 route.upload_url,
-                data=handle,
+                data=request_body,
                 headers=request_headers,
                 timeout=(float(connect_timeout), float(read_timeout)),
                 allow_redirects=False,

@@ -198,6 +198,41 @@ def test_folder_put_never_reloads_environment_after_route_resolution(
     )
 
 
+def test_folder_put_sends_empty_file_without_chunked_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "negative.txt"
+    path.write_bytes(b"")
+    identity = capture_source_identity(path)
+
+    def send(
+        _session: requests.Session,
+        request: requests.PreparedRequest,
+        **_kwargs: object,
+    ) -> requests.Response:
+        assert request.body in (None, b"")
+        assert request.headers["Content-Length"] == "0"
+        assert "Transfer-Encoding" not in request.headers
+        response = requests.Response()
+        response.status_code = 200
+        response.reason = "OK"
+        response.headers["x-amz-version-id"] = "version-id"
+        response._content = b""
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr("requests.Session.send", send)
+
+    _put_file_with_retries(
+        route=_route(),
+        path=path,
+        expected_identity=identity,
+        headers={"Content-Type": "text/plain"},
+        retries=1,
+        base_delay_sec=0.001,
+    )
+
+
 def test_folder_put_rejects_different_inode_before_any_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
